@@ -18,11 +18,19 @@ type PipelineResult = {
   draftRetries: number;
   altTitles: string[];
   faqSuggestions: string[];
+  grounding: {
+    used: boolean;
+    sourcesSeen: { title: string; url: string }[];
+    error?: string;
+    source: "manual" | "api" | "none";
+  };
 };
 
 export default function Home() {
   const router = useRouter();
   const [topic, setTopic] = useState("");
+  const [urls, setUrls] = useState("");
+  const [showUrlInput, setShowUrlInput] = useState(false);
   const [running, setRunning] = useState(false);
   const [steps, setSteps] = useState<string[]>([]);
   const [result, setResult] = useState<PipelineResult | null>(null);
@@ -47,7 +55,10 @@ export default function Home() {
       const res = await fetch("/api/generate", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ topic: topic.trim() }),
+        body: JSON.stringify({
+          topic: topic.trim(),
+          urls: urls.trim() || undefined,
+        }),
         signal: controller.signal,
       });
 
@@ -111,11 +122,16 @@ export default function Home() {
     setTimeout(() => setCopied(false), 2000);
   }
 
+  const urlCount = urls
+    .split(/[\n,]+/)
+    .map((s) => s.trim())
+    .filter(Boolean).length;
+
   return (
     <div className="min-h-screen bg-[#0d0d0d] text-[#e8e8e8]">
       <header className="flex items-center justify-between border-b border-[#1f1f1f] px-6 py-4">
         <h1 className="text-sm font-medium text-[#e8e8e8]">
-          AEO Content Pipeline
+          Relevance Engineering
         </h1>
         <button
           onClick={handleLogout}
@@ -149,6 +165,38 @@ export default function Home() {
               {running ? "Generating..." : "Generate"}
             </button>
           </div>
+
+          <button
+            type="button"
+            onClick={() => setShowUrlInput((v) => !v)}
+            className="mt-3 text-xs text-[#888] hover:text-[#e8e8e8]"
+          >
+            {showUrlInput ? "− Hide" : "+ Add"} real SERP URLs (optional)
+          </button>
+
+          {showUrlInput && (
+            <div className="mt-2">
+              <label htmlFor="urls" className="mb-1.5 block text-xs text-[#999]">
+                Paste Google SERP URLs — one per line, or comma-separated
+                (e.g. from a CSV export). These will be fetched and used to
+                ground the content instead of an automatic search.
+              </label>
+              <textarea
+                id="urls"
+                value={urls}
+                onChange={(e) => setUrls(e.target.value)}
+                placeholder={"https://example.com/page-one\nhttps://example.com/page-two\nhttps://example.com/page-three"}
+                rows={5}
+                disabled={running}
+                className="w-full resize-y rounded-md border border-[#2a2a2a] bg-[#161616] px-3 py-2 text-sm font-mono outline-none focus:border-[#555] focus:ring-1 focus:ring-[#555] disabled:opacity-50"
+              />
+              <p className="mt-1 text-xs text-[#666]">
+                {urlCount > 0
+                  ? `${urlCount} URL${urlCount === 1 ? "" : "s"} detected (max 15 used).`
+                  : "No URLs entered yet — without these, the app will try to fetch real Google AI Overview data automatically."}
+              </p>
+            </div>
+          )}
         </form>
 
         {steps.length > 0 && (
@@ -170,6 +218,44 @@ export default function Home() {
 
         {result && (
           <div className="space-y-8">
+            <section>
+              <h2 className="mb-3 text-xs font-medium uppercase tracking-wide text-[#999]">
+                Grounding —{" "}
+                {result.grounding.source === "manual"
+                  ? "from URLs you supplied"
+                  : result.grounding.source === "api"
+                  ? "from live Google AI data"
+                  : "none (writer used model knowledge only)"}
+              </h2>
+              <div className="rounded-md border border-[#1f1f1f] bg-[#121212] p-4">
+                {result.grounding.sourcesSeen.length > 0 ? (
+                  <ul className="space-y-1.5 text-sm">
+                    {result.grounding.sourcesSeen.map((s, i) => (
+                      <li key={i}>
+                        <a
+                          href={s.url}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="text-[#8ab4f8] hover:underline"
+                        >
+                          {s.title || s.url}
+                        </a>
+                        <span className="ml-1.5 text-xs text-[#666]">
+                          {s.url}
+                        </span>
+                      </li>
+                    ))}
+                  </ul>
+                ) : (
+                  <p className="text-sm text-[#888]">
+                    {result.grounding.error
+                      ? `Grounding failed: ${result.grounding.error}`
+                      : "No real sources were used for this generation — the writer relied on the model's own training knowledge, not live data."}
+                  </p>
+                )}
+              </div>
+            </section>
+
             <section>
               <div className="mb-3 flex items-center justify-between">
                 <h2 className="text-xs font-medium uppercase tracking-wide text-[#999]">

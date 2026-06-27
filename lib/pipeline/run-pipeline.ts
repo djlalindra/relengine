@@ -1,5 +1,81 @@
 import { callModel, ChatMessage } from "./model-client";
 import { runStructuralChecks, StructuralReport } from "./structural-checks";
+import { fetchGoogleAiSerp, SerpResult } from "./fetchserp-client";
+
+function getFetchserpApiKey(): string | undefined {
+  return process.env.FETCHSERP_API_KEY;
+}
+
+/**
+ * Fetches basic page content (title + text snippet) for a list of manually-
+ * supplied URLs. Uses fetchSERP's no-JS scraping endpoint if a key is
+ * configured (handles bot-protected sites better); falls back to a direct
+ * fetch + naive text extraction if no fetchSERP key is set, so this still
+ * works even without that API. Best-effort: failures per-URL are recorded
+ * rather than thrown, since one bad URL shouldn't kill the whole batch.
+ */
+async function fetchManualUrlContent(
+  urls: string[]
+): Promise<{ title: string; url: string; description?: string }[]> {
+  const apiKey = getFetchserpApiKey();
+  const results: { title: string; url: string; description?: string }[] = [];
+
+  for (const url of urls) {
+    try {
+      if (apiKey) {
+        const response = await fetch(
+          `https://www.fetchserp.com/api/v1/scrape_webpage_nojs?` +
+            new URLSearchParams({ url }),
+          {
+            headers: {
+              accept: "application/json",
+              authorization: `Bearer ${apiKey}`,
+            },
+          }
+        );
+        if (response.ok) {
+          const data = await response.json();
+          const html: string = data?.web_page?.html ?? "";
+          const titleMatch = html.match(/<title[^>]*>([^<]*)<\/title>/i);
+          const title = titleMatch ? titleMatch[1].trim() : url;
+          const textOnly = html
+            .replace(/<script[\s\S]*?<\/script>/gi, "")
+            .replace(/<style[\s\S]*?<\/style>/gi, "")
+            .replace(/<[^>]+>/g, " ")
+            .replace(/\s+/g, " ")
+            .trim();
+          results.push({ title, url, description: textOnly.slice(0, 300) });
+          continue;
+        }
+      }
+
+      // Fallback: direct fetch, no API key needed. Best-effort only --
+      // many sites block generic server-side fetches, so failures here
+      // are expected and handled gracefully.
+      const direct = await fetch(url, {
+        headers: { "User-Agent": "Mozilla/5.0 (compatible; ContentAuditBot/1.0)" },
+      });
+      if (direct.ok) {
+        const html = await direct.text();
+        const titleMatch = html.match(/<title[^>]*>([^<]*)<\/title>/i);
+        const title = titleMatch ? titleMatch[1].trim() : url;
+        const textOnly = html
+          .replace(/<script[\s\S]*?<\/script>/gi, "")
+          .replace(/<style[\s\S]*?<\/style>/gi, "")
+          .replace(/<[^>]+>/g, " ")
+          .replace(/\s+/g, " ")
+          .trim();
+        results.push({ title, url, description: textOnly.slice(0, 300) });
+      } else {
+        results.push({ title: url, url, description: "(could not fetch this page)" });
+      }
+    } catch {
+      results.push({ title: url, url, description: "(could not fetch this page)" });
+    }
+  }
+
+  return results;
+}
 
 const MAX_RETRIES = 3;
 
@@ -12,6 +88,12 @@ export type PipelineResult = {
   draftRetries: number;
   altTitles: string[];
   faqSuggestions: string[];
+  grounding: {
+    used: boolean;
+    sourcesSeen: { title: string; url: string }[];
+    error?: string;
+    source: "manual" | "api" | "none";
+  };
 };
 
 export type ProgressCallback = (step: string) => void;
@@ -47,7 +129,7 @@ Rules:
 - Keep paragraphs under 150 words. Break up long paragraphs.
 - Write in plain, direct language. No buzzwords, no hollow phrases like "in today's fast-paced world" or "unlock your potential."
 - The FAQ section uses H3 for each question, with a direct 1-3 sentence answer immediately after.
-- Do not invent specific statistics, named tools, or client results -- write structurally complete content with placeholders like [METRIC] or [CASE STUDY] where a real example would go, rather than fabricating one.
+- Do not invent specific statistics, named tools, or client results beyond what's provided as real grounding data -- where no real data is given, use placeholders like [METRIC] or [CASE STUDY] rather than fabricating one.
 - Output ONLY the final markdown article. No preamble, no explanation, no meta-commentary.`;
 
 const DRAFT_VALIDATOR_SYSTEM = `You are a strict editorial reviewer checking a drafted article against these requirements:
@@ -71,9 +153,113 @@ function parseValidatorResponse(response: string): { ok: boolean; missing: strin
   return { ok, missing };
 }
 
+function formatSourcesForPrompt(serp: SerpResult): string {
+  const lines: string[] = [];
+
+  if (serp.aiOverview.content) {
+    lines.push(`Google AI Overview currently says: "${serp.aiOverview.content}"`);
+  }
+
+  const allSources = [
+    ...serp.aiOverview.sources,
+    ...serp.aiMode.sources,
+    ...serp.organicResults,
+  ];
+
+  // De-duplicate by URL
+  const seen = new Set<string>();
+  const unique = allSources.filter((s) => {
+    if (!s.url || seen.has(s.url)) return false;
+    seen.add(s.url);
+    return true;
+  });
+
+  if (unique.length > 0) {
+    lines.push("\nSources Google currently surfaces for this topic:");
+    for (const s of unique.slice(0, 8)) {
+      lines.push(`- ${s.title || "(untitled)"} -- ${s.url}${s.description ? `: ${s.description}` : ""}`);
+    }
+  }
+
+  return lines.join("\n");
+}
+
+async function fetchGrounding(
+  topic: string,
+  onProgress: ProgressCallback,
+  manualUrls: string[] = []
+): Promise<{ context: string; sourcesSeen: { title: string; url: string }[]; used: boolean; error?: string; source: "manual" | "api" | "none" }> {
+  // Manual URLs take priority -- if the person supplied their own list
+  // (e.g. from manually checking Google), use that instead of calling
+  // fetchSERP. This costs zero API credits and lets the person ground
+  // generation in exactly the pages they chose, rather than whatever the
+  // API call happens to return.
+  if (manualUrls.length > 0) {
+    onProgress(`Fetching content from ${manualUrls.length} supplied URL(s)...`);
+    try {
+      const pages = await fetchManualUrlContent(manualUrls);
+
+      const lines: string[] = ["Sources supplied by the user for this topic:"];
+      for (const p of pages) {
+        lines.push(`- ${p.title} -- ${p.url}${p.description ? `: ${p.description}` : ""}`);
+      }
+
+      const sourcesSeen = pages.map((p) => ({ title: p.title, url: p.url }));
+
+      onProgress(`Fetched content from ${pages.length} supplied URL(s).`);
+
+      return {
+        context: lines.join("\n"),
+        sourcesSeen,
+        used: true,
+        source: "manual",
+      };
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Unknown error fetching supplied URLs.";
+      onProgress(`Could not fetch supplied URLs (${message}). Continuing without them.`);
+      return { context: "", sourcesSeen: [], used: false, error: message, source: "none" };
+    }
+  }
+
+  onProgress("Fetching real Google AI Overview / AI Mode data...");
+
+  try {
+    const serp = await fetchGoogleAiSerp(topic);
+    const context = formatSourcesForPrompt(serp);
+
+    const sourcesSeen = [
+      ...serp.aiOverview.sources,
+      ...serp.aiMode.sources,
+      ...serp.organicResults,
+    ]
+      .filter((s) => s.url)
+      .map((s) => ({ title: s.title || "(untitled)", url: s.url }));
+
+    const seen = new Set<string>();
+    const uniqueSourcesSeen = sourcesSeen.filter((s) => {
+      if (seen.has(s.url)) return false;
+      seen.add(s.url);
+      return true;
+    });
+
+    onProgress(
+      uniqueSourcesSeen.length > 0
+        ? `Found ${uniqueSourcesSeen.length} real source(s) Google currently surfaces for this topic.`
+        : "Google AI data fetched, but no source URLs were returned for this query."
+    );
+
+    return { context, sourcesSeen: uniqueSourcesSeen, used: true, source: "api" };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : "Unknown grounding error.";
+    onProgress(`Grounding unavailable (${message}). Continuing without real SERP data.`);
+    return { context: "", sourcesSeen: [], used: false, error: message, source: "none" };
+  }
+}
+
 async function planOutline(
   topic: string,
-  onProgress: ProgressCallback
+  onProgress: ProgressCallback,
+  groundingContext: string
 ): Promise<{ outline: string; retries: number }> {
   let outline = "";
   let retries = 0;
@@ -86,13 +272,17 @@ async function planOutline(
         : `Revising outline (attempt ${attempt + 1})...`
     );
 
+    const groundingBlock = groundingContext
+      ? `\n\nReal current Google data for this topic (use this to inform what subtopics matter and what readers/AI engines are actually seeing -- do not just copy it):\n${groundingContext}`
+      : "";
+
     const messages: ChatMessage[] = [
       { role: "system", content: PLANNER_SYSTEM },
       {
         role: "user",
         content: feedback
-          ? `Topic/service: ${topic}\n\nYour previous outline had issues: ${feedback}\n\nProduce a corrected outline.`
-          : `Topic/service: ${topic}`,
+          ? `Topic/service: ${topic}${groundingBlock}\n\nYour previous outline had issues: ${feedback}\n\nProduce a corrected outline.`
+          : `Topic/service: ${topic}${groundingBlock}`,
       },
     ];
 
@@ -125,7 +315,8 @@ async function planOutline(
 async function writeDraft(
   topic: string,
   outline: string,
-  onProgress: ProgressCallback
+  onProgress: ProgressCallback,
+  groundingContext: string
 ): Promise<{ draft: string; retries: number }> {
   let draft = "";
   let retries = 0;
@@ -138,13 +329,17 @@ async function writeDraft(
         : `Revising draft (attempt ${attempt + 1})...`
     );
 
+    const groundingBlock = groundingContext
+      ? `\n\nReal current Google data for this topic (ground specific claims in this where relevant, and feel free to reference what's currently surfacing, but do not fabricate beyond what's given here):\n${groundingContext}`
+      : "";
+
     const messages: ChatMessage[] = [
       { role: "system", content: WRITER_SYSTEM },
       {
         role: "user",
         content: feedback
-          ? `Topic/service: ${topic}\n\nOutline to follow:\n${outline}\n\nYour previous draft had issues: ${feedback}\n\nProduce a corrected full article.`
-          : `Topic/service: ${topic}\n\nOutline to follow:\n${outline}`,
+          ? `Topic/service: ${topic}\n\nOutline to follow:\n${outline}${groundingBlock}\n\nYour previous draft had issues: ${feedback}\n\nProduce a corrected full article.`
+          : `Topic/service: ${topic}\n\nOutline to follow:\n${outline}${groundingBlock}`,
       },
     ];
 
@@ -221,17 +416,22 @@ FAQS:
 
 export async function runPipeline(
   topic: string,
-  onProgress: ProgressCallback = () => {}
+  onProgress: ProgressCallback = () => {},
+  manualUrls: string[] = []
 ): Promise<PipelineResult> {
+  const grounding = await fetchGrounding(topic, onProgress, manualUrls);
+
   const { outline, retries: outlineRetries } = await planOutline(
     topic,
-    onProgress
+    onProgress,
+    grounding.context
   );
 
   const { draft, retries: draftRetries } = await writeDraft(
     topic,
     outline,
-    onProgress
+    onProgress,
+    grounding.context
   );
 
   const { altTitles, faqSuggestions } = await generateAltTitlesAndFaq(
@@ -252,5 +452,11 @@ export async function runPipeline(
     draftRetries,
     altTitles,
     faqSuggestions,
+    grounding: {
+      used: grounding.used,
+      sourcesSeen: grounding.sourcesSeen,
+      error: grounding.error,
+      source: grounding.source,
+    },
   };
 }

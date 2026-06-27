@@ -41,7 +41,7 @@ export default function LoginPage() {
     <div className="flex min-h-screen items-center justify-center bg-[#0d0d0d] px-4">
       <div className="w-full max-w-sm">
         <h1 className="mb-1 text-lg font-medium text-[#e8e8e8]">
-          AEO Content Pipeline
+          Relevance Engineering
         </h1>
         <p className="mb-8 text-sm text-[#888]">Sign in to continue.</p>
 

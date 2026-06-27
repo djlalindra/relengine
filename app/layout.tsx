@@ -2,7 +2,7 @@ import type { Metadata } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "AEO Content Pipeline",
+  title: "Relevance Engineering",
   description: "Generate AEO/SEO-optimized service content.",
 };
 

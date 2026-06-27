@@ -39,7 +39,7 @@ export async function callModel(
       // OpenRouter requests these for free-tier usage attribution; harmless
       // if your deployed domain differs, but recommended to keep accurate.
       "HTTP-Referer": process.env.APP_URL || "http://localhost:3000",
-      "X-Title": "AEO Content Pipeline",
+      "X-Title": "Relevance Engineering",
     },
     body: JSON.stringify({
       model: options.model ?? DEFAULT_MODEL,
