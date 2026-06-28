@@ -21,6 +21,7 @@ type PageSummary = {
   entityCount: number;
   rawText: string;
   informationGain: { term: string; count: number }[];
+  topicalCoverageScore: number;
 };
 
 type TopKeyword = {
@@ -81,8 +82,6 @@ type StructuredOptimizationResult = {
   overallProjectedScore: number | null;
   projectedScoreUnavailableReason?: string;
   sectionsFound: number;
-  usedFallbackAssignment: boolean;
-  fallbackReason?: string;
 };
 
 type OptimizeResult = {
@@ -92,6 +91,23 @@ type OptimizeResult = {
 
 type StructuralFinding = { rule: string; passed: boolean; detail: string };
 type StructuralReport = { findings: StructuralFinding[]; score: number };
+
+const C = {
+  bg: "#06090F",
+  card: "#0D111D",
+  border: "#1A1F2E",
+  text: "#F5F7FA",
+  muted: "#8B93A7",
+  green: "#14BA82",
+  red: "#EE4542",
+  gold: "#E0A33C",
+  purple: "#7C6FE0",
+  blue: "#5B8DEF",
+};
+
+function pillStyle(color: string) {
+  return { backgroundColor: color + "26", color };
+}
 
 function useSSE() {
   async function run(
@@ -150,9 +166,9 @@ function useSSE() {
 function StepStatus({ steps, running }: { steps: string[]; running: boolean }) {
   if (steps.length === 0) return null;
   return (
-    <div className="mt-4 space-y-1.5 rounded-md border border-[#1f1f1f] bg-[#121212] p-4">
+    <div className="mt-4 space-y-1.5 rounded-xl border p-4" style={{ borderColor: C.border, backgroundColor: C.card }}>
       {steps.map((step, i) => (
-        <p key={i} className="text-xs text-[#888]">
+        <p key={i} className="text-xs" style={{ color: C.muted }}>
           {i === steps.length - 1 && running ? "→ " : "✓ "}
           {step}
         </p>
@@ -163,8 +179,8 @@ function StepStatus({ steps, running }: { steps: string[]; running: boolean }) {
 
 function ErrorBox({ message }: { message: string }) {
   return (
-    <div className="mt-4 rounded-md border border-[#3a1f1f] bg-[#1a1212] p-4">
-      <p className="text-sm text-[#ff6b6b]">{message}</p>
+    <div className="mt-4 rounded-xl border p-4" style={{ borderColor: "#3a1f1f", backgroundColor: "#1a1212" }}>
+      <p className="text-sm" style={{ color: C.red }}>{message}</p>
     </div>
   );
 }
@@ -172,10 +188,29 @@ function ErrorBox({ message }: { message: string }) {
 function WarningsBox({ warnings }: { warnings: string[] }) {
   if (warnings.length === 0) return null;
   return (
-    <div className="space-y-1 rounded-md border border-[#3a2f1f] bg-[#1a1712] p-4">
+    <div className="space-y-1 rounded-xl border p-4" style={{ borderColor: "#3a2f1f", backgroundColor: "#1a1712" }}>
       {warnings.map((w, i) => (
-        <p key={i} className="text-sm text-[#e8c468]">{w}</p>
+        <p key={i} className="text-sm" style={{ color: C.gold }}>{w}</p>
       ))}
+    </div>
+  );
+}
+
+function Badge({ children, color }: { children: React.ReactNode; color: string }) {
+  return (
+    <span className="rounded-full px-2 py-0.5 text-xs font-medium" style={pillStyle(color)}>
+      {children}
+    </span>
+  );
+}
+
+function ProgressBar({ percent, color }: { percent: number; color: string }) {
+  return (
+    <div className="h-1.5 w-full overflow-hidden rounded-full" style={{ backgroundColor: C.border }}>
+      <div
+        className="h-full rounded-full transition-all"
+        style={{ width: `${Math.max(0, Math.min(100, percent))}%`, backgroundColor: color }}
+      />
     </div>
   );
 }
@@ -186,30 +221,33 @@ function PageDetail({ page }: { page: PageSummary }) {
   return (
     <div className="space-y-4">
       {page.fetchError ? (
-        <p className="text-sm text-[#ff6b6b]">Failed: {page.fetchError}</p>
+        <p className="text-sm" style={{ color: C.red }}>Failed: {page.fetchError}</p>
       ) : (
         <>
           <div className="flex gap-4">
-            <p className="text-xs text-[#888]">
-              <span className="text-[#d8d8d8]">{page.wordCount}</span> words
+            <p className="text-xs" style={{ color: C.muted }}>
+              <span style={{ color: C.text }}>{page.wordCount}</span> words
             </p>
-            <p className="text-xs text-[#888]">
-              <span className="text-[#d8d8d8]">{page.entityCount}</span> entities identified
+            <p className="text-xs" style={{ color: C.muted }}>
+              <span style={{ color: C.text }}>{page.entityCount}</span> entities
+            </p>
+            <p className="text-xs" style={{ color: C.muted }}>
+              <span style={{ color: C.text }}>{page.informationGain.length}</span> unique signals
             </p>
           </div>
           <div>
-            <p className="mb-1.5 text-xs font-medium uppercase tracking-wide text-[#999]">
+            <p className="mb-1.5 text-xs font-medium uppercase tracking-wide" style={{ color: C.muted }}>
               Headings
             </p>
             {page.headingOutline.length === 0 ? (
-              <p className="text-xs text-[#666]">No headings detected.</p>
+              <p className="text-xs" style={{ color: C.muted }}>No headings detected.</p>
             ) : (
               <div className="space-y-0.5">
                 {page.headingOutline.map((h, i) => (
                   <p
                     key={i}
-                    className="text-xs text-[#aaa]"
-                    style={{ paddingLeft: `${(h.level - 1) * 12}px` }}
+                    className="text-xs"
+                    style={{ color: "#aab2c5", paddingLeft: `${(h.level - 1) * 12}px` }}
                   >
                     H{h.level} — {h.text}
                   </p>
@@ -218,14 +256,15 @@ function PageDetail({ page }: { page: PageSummary }) {
             )}
           </div>
           <div>
-            <p className="mb-1.5 text-xs font-medium uppercase tracking-wide text-[#999]">
+            <p className="mb-1.5 text-xs font-medium uppercase tracking-wide" style={{ color: C.muted }}>
               Top entities (showing {Math.min(20, page.entities.length)} of {page.entityCount})
             </p>
             <div className="flex flex-wrap gap-1.5">
               {page.entities.slice(0, 20).map((e, i) => (
                 <span
                   key={i}
-                  className="rounded bg-[#1f1f1f] px-2 py-0.5 text-xs text-[#aaa]"
+                  className="rounded-full px-2 py-0.5 text-xs"
+                  style={pillStyle(C.purple)}
                   title={`${e.type} · salience ${e.salience.toFixed(2)}`}
                 >
                   {e.name}
@@ -234,11 +273,11 @@ function PageDetail({ page }: { page: PageSummary }) {
             </div>
           </div>
           <div>
-            <p className="mb-1.5 text-xs font-medium uppercase tracking-wide text-[#999]">
+            <p className="mb-1.5 text-xs font-medium uppercase tracking-wide" style={{ color: C.muted }}>
               Information gain — unique to this page only
             </p>
             {page.informationGain.length === 0 ? (
-              <p className="text-xs text-[#666]">
+              <p className="text-xs" style={{ color: C.muted }}>
                 Nothing found that&apos;s unique to this page vs. the rest of the set.
               </p>
             ) : (
@@ -246,7 +285,8 @@ function PageDetail({ page }: { page: PageSummary }) {
                 {page.informationGain.map((g, i) => (
                   <span
                     key={i}
-                    className="rounded bg-[#1a2a1f] px-2 py-0.5 text-xs text-[#8fd99f]"
+                    className="rounded-full px-2 py-0.5 text-xs"
+                    style={pillStyle(C.green)}
                     title={`mentioned ${g.count}x, found on no other page in this set`}
                   >
                     {g.term}
@@ -259,12 +299,16 @@ function PageDetail({ page }: { page: PageSummary }) {
             <button
               type="button"
               onClick={() => setShowRawText((v) => !v)}
-              className="text-xs text-[#888] hover:text-[#e8e8e8] underline"
+              className="text-xs underline"
+              style={{ color: C.muted }}
             >
               {showRawText ? "Hide" : "Show"} raw extracted text (verify header/footer exclusion)
             </button>
             {showRawText && (
-              <pre className="mt-2 max-h-64 overflow-y-auto whitespace-pre-wrap rounded-md border border-[#1f1f1f] bg-[#0d0d0d] p-3 text-xs text-[#999]">
+              <pre
+                className="mt-2 max-h-64 overflow-y-auto whitespace-pre-wrap rounded-xl border p-3 text-xs"
+                style={{ borderColor: C.border, backgroundColor: C.bg, color: C.muted }}
+              >
                 {page.rawText || "(no text extracted)"}
               </pre>
             )}
@@ -298,6 +342,9 @@ export default function Home() {
   const [structuralError, setStructuralError] = useState("");
 
   const [copied, setCopied] = useState(false);
+  const [entityFilter, setEntityFilter] = useState("");
+  const [keywordFilter, setKeywordFilter] = useState("");
+  const [activeTypeFilter, setActiveTypeFilter] = useState<string | null>(null);
 
   const abortRef = useRef<AbortController | null>(null);
 
@@ -428,20 +475,19 @@ export default function Home() {
 
     const sheets: { name: string; rows: (string | number)[][] }[] = [];
 
-    // Sheet 1: Page-by-page overview
     const pageRows: (string | number)[][] = [
-      ["URL", "Role", "Word Count", "Entity Count"],
-      [scrapeResult.target.url, "Target", scrapeResult.target.wordCount, scrapeResult.target.entityCount],
+      ["URL", "Role", "Word Count", "Entity Count", "Topical Coverage %"],
+      [scrapeResult.target.url, "Target", scrapeResult.target.wordCount, scrapeResult.target.entityCount, scrapeResult.target.topicalCoverageScore],
       ...scrapeResult.competitors.map((c) => [
         c.url,
         "Competitor",
         c.wordCount,
         c.entityCount,
+        c.topicalCoverageScore,
       ] as (string | number)[]),
     ];
     sheets.push({ name: "Pages Overview", rows: pageRows });
 
-    // Sheet 2: Top semantic keywords
     const keywordRows: (string | number)[][] = [
       ["Term", "Type", "Competitors Mentioning", "Avg Salience", "In Target"],
       ...scrapeResult.topKeywords.map((k) => [
@@ -454,23 +500,34 @@ export default function Home() {
     ];
     sheets.push({ name: "Top Keywords", rows: keywordRows });
 
-    // Sheet 3: Per-page entities
-    const entityRows: (string | number)[][] = [["Page URL", "Role", "Entity", "Type", "Salience"]];
-    entityRows.push(
-      ...scrapeResult.target.entities.map(
-        (e) => [scrapeResult.target.url, "Target", e.name, e.type, e.salience.toFixed(3)] as (string | number)[]
-      )
-    );
-    for (const c of scrapeResult.competitors) {
-      entityRows.push(
-        ...c.entities.map(
-          (e) => [c.url, "Competitor", e.name, e.type, e.salience.toFixed(3)] as (string | number)[]
-        )
-      );
-    }
-    sheets.push({ name: "Entities by Page", rows: entityRows });
+    const allPages = [
+      { url: scrapeResult.target.url, label: "TARGET: " + scrapeResult.target.url, entities: scrapeResult.target.entities },
+      ...scrapeResult.competitors.map((c) => ({ url: c.url, label: c.url, entities: c.entities })),
+    ];
 
-    // Sheet 4: Information gain
+    const entityTypeByName = new Map<string, string>();
+    const allEntityNames = new Set<string>();
+    for (const page of allPages) {
+      for (const e of page.entities) {
+        allEntityNames.add(e.name);
+        if (!entityTypeByName.has(e.name)) entityTypeByName.set(e.name, e.type);
+      }
+    }
+
+    const sortedEntityNames = Array.from(allEntityNames).sort();
+    const matrixHeader = ["Entity", "Type", ...allPages.map((p) => p.label)];
+    const matrixRows: (string | number)[][] = [matrixHeader];
+
+    for (const name of sortedEntityNames) {
+      const row: (string | number)[] = [name, entityTypeByName.get(name) ?? ""];
+      for (const page of allPages) {
+        const found = page.entities.find((e) => e.name === name);
+        row.push(found ? found.salience.toFixed(3) : "");
+      }
+      matrixRows.push(row);
+    }
+    sheets.push({ name: "Entity Matrix", rows: matrixRows });
+
     const infoGainRows: (string | number)[][] = [["Page URL", "Role", "Unique Term", "Mentions"]];
     infoGainRows.push(
       ...scrapeResult.target.informationGain.map(
@@ -484,20 +541,28 @@ export default function Home() {
     }
     sheets.push({ name: "Information Gain", rows: infoGainRows });
 
+    const scrapeReportRows: (string | number)[][] = [
+      ["URL", "Role", "Status"],
+      [scrapeResult.target.url, "Target", scrapeResult.target.fetchError ? "Failed: " + scrapeResult.target.fetchError : "OK"],
+      ...scrapeResult.competitors.map(
+        (c) => [c.url, "Competitor", c.fetchError ? "Failed: " + c.fetchError : "OK"] as (string | number)[]
+      ),
+    ];
+    sheets.push({ name: "Scrape Report", rows: scrapeReportRows });
+
     if (optimizeResult) {
-      // Sheet 5: Missing entities
       const missingRows: (string | number)[][] = [
-        ["Entity", "Type", "Competitors Mentioning", "Avg Salience"],
-        ...optimizeResult.gapReport.missingEntities.map(
-          (e) => [e.name, e.type, e.appearsInCompetitors, e.avgSalienceInCompetitors.toFixed(3)] as (
+        ["Entity", "Type", "Competitors Mentioning", "Avg Salience", "Suggested Placement"],
+        ...optimizeResult.gapReport.missingEntities.map((e) => {
+          const placement = findPlacement(e.name);
+          return [e.name, e.type, e.appearsInCompetitors, e.avgSalienceInCompetitors.toFixed(3), placement] as (
             | string
             | number
-          )[]
-        ),
+          )[];
+        }),
       ];
       sheets.push({ name: "Missing Entities", rows: missingRows });
 
-      // Sheet 6: Uncovered passages
       const passageRows: (string | number)[][] = [
         ["Competitor URL", "Match Score", "Passage"],
         ...optimizeResult.gapReport.semanticCoverage.uncoveredPassages.map(
@@ -506,7 +571,6 @@ export default function Home() {
       ];
       sheets.push({ name: "Uncovered Passages", rows: passageRows });
 
-      // Sheet 7: Section-by-section optimization (the real deliverable)
       const optRows: (string | number)[][] = [
         [
           "Section",
@@ -552,7 +616,6 @@ export default function Home() {
     );
   }
 
-
   const criticalGapCount = optimizeResult?.gapReport.missingEntities.length ?? 0;
   const infoGainCount = scrapeResult?.topKeywords.filter((k) => !k.presentInTarget).length ?? 0;
 
@@ -564,23 +627,72 @@ export default function Home() {
       }))
     : [];
 
+  function findPlacement(entityName: string): string {
+    if (!optimizeResult) return "Not yet analyzed";
+    for (const section of optimizeResult.optimization.sections) {
+      if (section.entitiesAssigned.some((e) => e.toLowerCase() === entityName.toLowerCase())) {
+        return section.isNew ? `${section.heading} (new)` : section.heading;
+      }
+    }
+    return "Unassigned";
+  }
+
+  const competitorScores = scrapeResult?.competitors.map((c) => c.topicalCoverageScore) ?? [];
+  const competitorAvgScore = competitorScores.length > 0
+    ? Math.round(competitorScores.reduce((a, b) => a + b, 0) / competitorScores.length)
+    : 0;
+  const topCompetitorScore = competitorScores.length > 0 ? Math.max(...competitorScores) : 0;
+
+  const entityTypes = optimizeResult
+    ? Array.from(new Set(optimizeResult.gapReport.missingEntities.map((e) => e.type)))
+    : [];
+
+  const filteredMissingEntities = optimizeResult
+    ? optimizeResult.gapReport.missingEntities.filter((e) => {
+        if (activeTypeFilter && e.type !== activeTypeFilter) return false;
+        if (entityFilter && !e.name.toLowerCase().includes(entityFilter.toLowerCase())) return false;
+        return true;
+      })
+    : [];
+
+  const filteredMissingKeywords = scrapeResult
+    ? scrapeResult.topKeywords
+        .filter((k) => !k.presentInTarget)
+        .filter((k) => !keywordFilter || k.term.toLowerCase().includes(keywordFilter.toLowerCase()))
+    : [];
+
+  const optimizerInsight = optimizeResult
+    ? `Your page covers ${optimizeResult.gapReport.semanticCoverage.coverageScore}% of competitor passages and is missing ${optimizeResult.gapReport.missingEntities.length} entit${optimizeResult.gapReport.missingEntities.length === 1 ? "y" : "ies"} that competitors mention. Applying the suggested section rewrites below is projected to move semantic coverage from ${optimizeResult.optimization.overallCurrentScore}% to ${optimizeResult.optimization.overallProjectedScore ?? "an unavailable score (Vertex recomputation failed)"}.`
+    : "Run the gap analysis to generate AI-backed optimization insight for this page.";
+
   return (
-    <div className="min-h-screen bg-[#0d0d0d] text-[#e8e8e8]">
-      <header className="flex items-center justify-between border-b border-[#1f1f1f] px-6 py-4">
-        <h1 className="text-sm font-medium text-[#e8e8e8]">Relevance Engineering</h1>
-        <button onClick={handleLogout} className="text-xs text-[#888] hover:text-[#e8e8e8]">
+    <div className="min-h-screen" style={{ backgroundColor: C.bg, color: C.text }}>
+      <header
+        className="flex items-center justify-between border-b px-6 py-3"
+        style={{ borderColor: C.border, backgroundColor: C.bg }}
+      >
+        <div className="flex items-center gap-2">
+          <span className="flex h-6 w-6 items-center justify-center rounded-md text-xs font-bold" style={{ backgroundColor: C.green, color: C.bg }}>
+            R
+          </span>
+          <div>
+            <p className="text-sm font-semibold leading-tight">Relevance Engineering</p>
+            <p className="text-[10px] uppercase tracking-wide leading-tight" style={{ color: C.muted }}>
+              Semantic Audit Engine
+            </p>
+          </div>
+        </div>
+        <button onClick={handleLogout} className="text-xs hover:underline" style={{ color: C.muted }}>
           Sign out
         </button>
       </header>
 
-      <main className="mx-auto max-w-4xl px-6 py-10 space-y-10">
-        <section>
-          <h2 className="mb-4 text-sm font-semibold text-[#e8e8e8]">
-            Step 1 — Scrape &amp; Summarize
-          </h2>
+      <main className="mx-auto max-w-5xl px-6 py-10 space-y-10">
+        <section className="rounded-xl border p-6" style={{ borderColor: C.border, backgroundColor: C.card }}>
+          <h2 className="mb-4 text-sm font-semibold">Step 1 — Scrape &amp; Summarize</h2>
           <form onSubmit={handleScrape} className="space-y-4">
             <div>
-              <label htmlFor="topic" className="mb-1.5 block text-xs text-[#999]">
+              <label htmlFor="topic" className="mb-1.5 block text-xs" style={{ color: C.muted }}>
                 Topic / keyword
               </label>
               <input
@@ -591,12 +703,13 @@ export default function Home() {
                 placeholder="e.g. car accident lawyer toronto"
                 maxLength={200}
                 disabled={scrapeRunning}
-                className="w-full rounded-md border border-[#2a2a2a] bg-[#161616] px-3 py-2 text-sm outline-none focus:border-[#555] focus:ring-1 focus:ring-[#555] disabled:opacity-50"
+                className="w-full rounded-lg border px-3 py-2 text-sm outline-none disabled:opacity-50"
+                style={{ borderColor: C.border, backgroundColor: C.bg, color: C.text }}
               />
             </div>
 
             <div>
-              <label htmlFor="targetUrl" className="mb-1.5 block text-xs text-[#999]">
+              <label htmlFor="targetUrl" className="mb-1.5 block text-xs" style={{ color: C.muted }}>
                 Target URL (required)
               </label>
               <input
@@ -606,12 +719,13 @@ export default function Home() {
                 onChange={(e) => setTargetUrl(e.target.value)}
                 placeholder="https://yoursite.com/your-page"
                 disabled={scrapeRunning}
-                className="w-full rounded-md border border-[#2a2a2a] bg-[#161616] px-3 py-2 text-sm outline-none focus:border-[#555] focus:ring-1 focus:ring-[#555] disabled:opacity-50"
+                className="w-full rounded-lg border px-3 py-2 text-sm outline-none disabled:opacity-50"
+                style={{ borderColor: C.border, backgroundColor: C.bg, color: C.text }}
               />
             </div>
 
             <div>
-              <label htmlFor="urls" className="mb-1.5 block text-xs text-[#999]">
+              <label htmlFor="urls" className="mb-1.5 block text-xs" style={{ color: C.muted }}>
                 Competitor URLs (required, at least 1)
               </label>
               <textarea
@@ -621,9 +735,10 @@ export default function Home() {
                 placeholder={"https://competitor1.com/page\nhttps://competitor2.com/page"}
                 rows={5}
                 disabled={scrapeRunning}
-                className="w-full resize-y rounded-md border border-[#2a2a2a] bg-[#161616] px-3 py-2 text-sm font-mono outline-none focus:border-[#555] focus:ring-1 focus:ring-[#555] disabled:opacity-50"
+                className="w-full resize-y rounded-lg border px-3 py-2 text-sm font-mono outline-none disabled:opacity-50"
+                style={{ borderColor: C.border, backgroundColor: C.bg, color: C.text }}
               />
-              <p className="mt-1 text-xs text-[#666]">
+              <p className="mt-1 text-xs" style={{ color: C.muted }}>
                 {urlCount > 0 ? `${urlCount} URL(s) detected.` : "No competitor URLs entered yet."}
               </p>
             </div>
@@ -632,7 +747,8 @@ export default function Home() {
               <button
                 type="submit"
                 disabled={scrapeRunning || !targetUrl.trim() || urlCount === 0}
-                className="rounded-md bg-[#e8e8e8] px-4 py-2 text-sm font-medium text-[#0d0d0d] transition hover:bg-white disabled:opacity-50"
+                className="rounded-lg px-4 py-2 text-sm font-medium disabled:opacity-50"
+                style={{ backgroundColor: C.green, color: C.bg }}
               >
                 {scrapeRunning ? "Scraping..." : "Scrape & Summarize"}
               </button>
@@ -640,7 +756,8 @@ export default function Home() {
                 <button
                   type="button"
                   onClick={handleStopScrape}
-                  className="rounded-md border border-[#3a1f1f] bg-[#1a1212] px-4 py-2 text-sm font-medium text-[#ff6b6b] transition hover:bg-[#241515]"
+                  className="rounded-lg border px-4 py-2 text-sm font-medium"
+                  style={{ borderColor: "#3a1f1f", backgroundColor: "#1a1212", color: C.red }}
                 >
                   Stop
                 </button>
@@ -653,66 +770,302 @@ export default function Home() {
         </section>
 
         {scrapeResult && (
-          <section className="border-t border-[#1f1f1f] pt-8 space-y-6">
-            <div className="flex items-center justify-between">
-              <div>
-                <h2 className="text-sm font-semibold text-[#e8e8e8]">Audit results</h2>
-                <p className="text-xs text-[#666]">{scrapeResult.target.url}</p>
+          <>
+            <section
+              className="flex flex-wrap items-center justify-between gap-3 rounded-xl border px-5 py-3"
+              style={{ borderColor: C.border, backgroundColor: C.card }}
+            >
+              <div className="flex flex-wrap items-center gap-2 text-sm">
+                <Badge color={C.blue}>{new URL(scrapeResult.target.url).hostname}</Badge>
+                {topic && <span style={{ color: C.muted }}>&ldquo;{topic}&rdquo;</span>}
+                <Badge color={C.purple}>Nemotron + Vertex</Badge>
               </div>
               <button
                 onClick={handleExportXlsx}
-                className="rounded-md border border-[#2a2a2a] bg-[#161616] px-3 py-1.5 text-xs text-[#aaa] hover:bg-[#1f1f1f]"
+                className="flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium"
+                style={{ backgroundColor: C.green, color: C.bg }}
               >
-                Export Excel (multi-tab)
+                Export Excel (multi-tab) ▾
               </button>
-            </div>
+            </section>
 
             <WarningsBox warnings={scrapeResult.errors} />
 
-            <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-              <ScoreCard value={scrapeResult.competitors.length} label="Competitors analyzed" />
-              <ScoreCard value={scrapeResult.target.wordCount} label="Target word count" />
-              <ScoreCard
-                value={criticalGapCount}
-                label="Missing entities"
-                accent={criticalGapCount > 0 ? "warning" : "good"}
-              />
-              <ScoreCard value={infoGainCount} label="Keyword gaps" accent={infoGainCount > 0 ? "warning" : "good"} />
-            </div>
+            <section className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+              <ScoreCard value={scrapeResult.competitors.length} label="Competitors analyzed" accent="info" />
+              <ScoreCard value={scrapeResult.target.wordCount} label="Target word count" accent="neutral" />
+              <ScoreCard value={criticalGapCount} label="Critical entity gaps" accent={criticalGapCount > 0 ? "danger" : "good"} />
+              <ScoreCard value={infoGainCount} label="Info-gain signals" accent={infoGainCount > 0 ? "warning" : "good"} />
+            </section>
+
+            <section className="rounded-xl border p-5" style={{ borderColor: C.border, backgroundColor: C.card }}>
+              <div className="mb-3 flex items-center justify-between">
+                <div>
+                  <p className="text-sm font-semibold">AI Content Optimizer</p>
+                  <p className="text-xs" style={{ color: C.muted }}>
+                    Section-grounded rewrite suggestions with recomputed impact
+                  </p>
+                </div>
+                <button
+                  onClick={handleOptimize}
+                  disabled={optimizeRunning}
+                  className="flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs font-medium disabled:opacity-50"
+                  style={{ backgroundColor: C.border, color: C.text }}
+                >
+                  {optimizeRunning ? "Running..." : optimizeResult ? "↻ Regenerate" : "Run gap analysis"}
+                </button>
+                {optimizeRunning && (
+                  <button onClick={handleStopOptimize} className="ml-2 text-xs" style={{ color: C.red }}>
+                    Stop
+                  </button>
+                )}
+              </div>
+
+              <div className="rounded-lg p-4" style={{ backgroundColor: C.bg }}>
+                <p className="text-sm" style={{ color: "#c9cedb" }}>{optimizerInsight}</p>
+              </div>
+
+              <StepStatus steps={optimizeSteps} running={optimizeRunning} />
+              {optimizeError && <ErrorBox message={optimizeError} />}
+
+              {optimizeResult && (
+                <div className="mt-4 flex items-center gap-6">
+                  <div>
+                    <p className="text-3xl font-bold" style={{ color: C.green }}>
+                      {optimizeResult.optimization.overallCurrentScore}
+                    </p>
+                    <p className="text-xs" style={{ color: C.muted }}>Current</p>
+                  </div>
+                  <span style={{ color: C.muted }}>→</span>
+                  <div>
+                    <p className="text-3xl font-bold" style={{ color: C.green }}>
+                      {optimizeResult.optimization.overallProjectedScore ?? "N/A"}
+                    </p>
+                    <p className="text-xs" style={{ color: C.muted }}>Projected</p>
+                  </div>
+                  {optimizeResult.optimization.overallProjectedScore === null && (
+                    <p className="text-xs" style={{ color: C.gold }}>
+                      {optimizeResult.optimization.projectedScoreUnavailableReason}
+                    </p>
+                  )}
+                </div>
+              )}
+            </section>
 
             {optimizeResult && (
-              <div className="grid gap-4 sm:grid-cols-2">
-                <div className="flex items-center justify-center rounded-md border border-[#1f1f1f] bg-[#121212] p-6">
-                  <CircularGauge
-                    value={optimizeResult.gapReport.semanticCoverage.coverageScore}
-                    label="Semantic coverage"
-                    sublabel="vs. competitor passages"
-                  />
+              <section>
+                <h2 className="mb-3 text-sm font-semibold">Optimization Summary</h2>
+                <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+                  {[
+                    {
+                      title: "Information Gain",
+                      color: C.green,
+                      body: `${scrapeResult.target.informationGain.length} unique term(s) your page contributes that no competitor mentions.`,
+                      items: scrapeResult.target.informationGain.slice(0, 3).map((g) => g.term),
+                    },
+                    {
+                      title: "Keywords Needed",
+                      color: C.red,
+                      body: `${infoGainCount} top keyword(s) competitors use that your page doesn't.`,
+                      items: scrapeResult.topKeywords.filter((k) => !k.presentInTarget).slice(0, 3).map((k) => k.term),
+                    },
+                    {
+                      title: "Entities to Mention",
+                      color: C.red,
+                      body: `${criticalGapCount} entit${criticalGapCount === 1 ? "y" : "ies"} competitors mention that your page is missing.`,
+                      items: optimizeResult.gapReport.missingEntities.slice(0, 3).map((e) => e.name),
+                    },
+                    {
+                      title: "Embedding Friendliness",
+                      color: C.blue,
+                      body: `${optimizeResult.gapReport.semanticCoverage.coverageScore}% of competitor passages have a strong semantic match on your page.`,
+                      items: [`${optimizeResult.gapReport.semanticCoverage.coverageScore}% semantic coverage`],
+                    },
+                    {
+                      title: "Language & Readability",
+                      color: C.gold,
+                      body: structuralResult
+                        ? `${structuralResult.findings.filter((f) => f.passed).length} of ${structuralResult.findings.length} structural checks passed.`
+                        : "Run the structural check (Step 3) to populate this.",
+                      items: structuralResult ? structuralResult.findings.filter((f) => f.passed).map((f) => f.rule) : [],
+                    },
+                    {
+                      title: "Citability",
+                      color: C.purple,
+                      body: "Whether each section carries a verifiable statistic, quote, or named source.",
+                      items: optimizeResult.optimization.sections
+                        .filter((s) => s.citabilityAfter >= 40)
+                        .slice(0, 3)
+                        .map((s) => s.heading),
+                    },
+                  ].map((card, i) => (
+                    <div key={i} className="rounded-xl border p-4" style={{ borderColor: C.border, backgroundColor: C.card }}>
+                      <div className="mb-2 flex items-center gap-2">
+                        <span className="h-2 w-2 rounded-full" style={{ backgroundColor: card.color }} />
+                        <p className="text-sm font-semibold">{card.title}</p>
+                      </div>
+                      <p className="mb-2 text-xs" style={{ color: C.muted }}>{card.body}</p>
+                      <ul className="space-y-1">
+                        {card.items.map((item, j) => (
+                          <li key={j} className="flex items-start gap-1.5 text-xs" style={{ color: "#c9cedb" }}>
+                            <span style={{ color: C.green }}>✓</span> {item}
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  ))}
                 </div>
-                <div className="rounded-md border border-[#1f1f1f] bg-[#121212] p-4">
-                  <p className="mb-3 text-xs font-medium uppercase tracking-wide text-[#999]">
-                    Top keywords — competitor mentions
-                  </p>
-                  <CoverageBarChart items={barChartItems} />
-                  <p className="mt-2 text-xs text-[#666]">
-                    <span className="text-[#6bcf6b]">green</span> = present in your target page ·{" "}
-                    <span className="text-[#ff6b6b]">red</span> = missing
-                  </p>
-                </div>
-              </div>
+              </section>
             )}
 
-            <div>
-              <p className="mb-2 text-xs font-medium uppercase tracking-wide text-[#999]">
-                Page-by-page analysis
-              </p>
+            {optimizeResult && optimizeResult.optimization.sections.length > 0 && (
+              <section>
+                <div className="mb-3 flex items-center justify-between">
+                  <h2 className="text-sm font-semibold">
+                    Section-by-Section Comparison — grounded in {optimizeResult.optimization.sectionsFound} real section(s)
+                  </h2>
+                  <button onClick={handleCopy} className="text-xs hover:underline" style={{ color: C.muted }}>
+                    {copied ? "Copied" : "Copy all"}
+                  </button>
+                </div>
+                <div className="space-y-3">
+                  {optimizeResult.optimization.sections.map((s, i) => (
+                    <div key={i} className="rounded-xl border p-4" style={{ borderColor: C.border, backgroundColor: C.card }}>
+                      <div className="mb-3 flex items-center justify-between">
+                        <p className="text-sm font-medium">
+                          {s.heading}
+                          {s.isNew && (
+                            <span className="ml-2 rounded-full px-2 py-0.5 text-xs" style={pillStyle(C.green)}>
+                              new section
+                            </span>
+                          )}
+                        </p>
+                        <span
+                          className="rounded-full px-2 py-0.5 text-xs font-medium"
+                          style={pillStyle(s.citabilityAfter >= 40 ? C.green : s.citabilityAfter >= 20 ? C.gold : C.red)}
+                        >
+                          {s.citabilityBefore} → {s.citabilityAfter}
+                        </span>
+                      </div>
+
+                      <div className="grid gap-4 sm:grid-cols-2">
+                        {!s.isNew && (
+                          <div>
+                            <p className="mb-1 text-xs font-medium uppercase tracking-wide" style={{ color: C.muted }}>
+                              Current
+                            </p>
+                            <p className="text-sm" style={{ color: "#aab2c5" }}>{s.currentText.slice(0, 300)}</p>
+                          </div>
+                        )}
+                        <div className={s.isNew ? "sm:col-span-2" : ""}>
+                          <p className="mb-1 flex items-center gap-1 text-xs font-medium uppercase tracking-wide" style={{ color: C.green }}>
+                            ✓ {s.isNew ? "Proposed new content" : "Suggested"}
+                          </p>
+                          <p className="text-sm" style={{ color: "#c9cedb" }}>{s.suggestedText}</p>
+                        </div>
+                      </div>
+
+                      {s.entitiesAssigned.length > 0 && (
+                        <div className="mt-3 flex flex-wrap gap-1.5">
+                          {s.entitiesAssigned.map((e, j) => (
+                            <span key={j} className="rounded-full px-2 py-0.5 text-xs" style={pillStyle(C.purple)}>
+                              {e}
+                            </span>
+                          ))}
+                        </div>
+                      )}
+
+                      {s.relevanceImpact && (
+                        <div className="mt-3 border-t pt-3 text-xs" style={{ borderColor: C.border, color: C.muted }}>
+                          ↗ Relevance impact: {s.relevanceImpact}
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </section>
+            )}
+
+            {optimizeResult && (
+              <section className="grid gap-4 sm:grid-cols-2">
+                <div className="flex flex-col items-center justify-center rounded-xl border p-6" style={{ borderColor: C.border, backgroundColor: C.card }}>
+                  <p className="mb-3 self-start text-sm font-semibold">Semantic Relevance</p>
+                  <CircularGauge
+                    value={optimizeResult.gapReport.semanticCoverage.coverageScore}
+                    label="Topic centroid baseline"
+                  />
+                </div>
+                <div className="rounded-xl border p-5" style={{ borderColor: C.border, backgroundColor: C.card }}>
+                  <p className="mb-3 text-sm font-semibold">Thematic Consensus</p>
+                  <p className="mb-3 text-xs" style={{ color: C.muted }}>
+                    Top entities across ranking pages — green = covered, red = gap
+                  </p>
+                  <CoverageBarChart items={barChartItems} />
+                </div>
+              </section>
+            )}
+
+            {scrapeResult.competitors.length > 0 && (
+              <section className="rounded-xl border p-5" style={{ borderColor: C.border, backgroundColor: C.card }}>
+                <p className="mb-1 text-sm font-semibold">Audit Summary</p>
+                <p className="mb-4 text-xs" style={{ color: C.muted }}>
+                  ↗ Topical coverage score: % of this term&apos;s top keywords each page actually contains
+                </p>
+
+                <div className="space-y-3">
+                  {[
+                    { label: "Your page", value: scrapeResult.target.topicalCoverageScore, color: C.green },
+                    { label: "Competitor average", value: competitorAvgScore, color: C.muted },
+                    { label: "Top competitor", value: topCompetitorScore, color: C.gold },
+                  ].map((row, i) => (
+                    <div key={i}>
+                      <div className="mb-1 flex items-center justify-between text-xs">
+                        <span style={{ color: C.muted }}>{row.label}</span>
+                        <span style={{ color: row.color }}>{row.value}%</span>
+                      </div>
+                      <ProgressBar percent={row.value} color={row.color} />
+                    </div>
+                  ))}
+                </div>
+
+                <div className="mt-5 grid grid-cols-2 gap-3 sm:grid-cols-4">
+                  <ScoreCard value={scrapeResult.topKeywords.length} label="Keywords tracked" accent="info" />
+                  <ScoreCard value={scrapeResult.target.entityCount} label="Your entities" accent="neutral" />
+                  <ScoreCard value={scrapeResult.target.informationGain.length} label="Unique signals" accent="good" />
+                  <ScoreCard value={criticalGapCount} label="Entity gaps" accent={criticalGapCount > 0 ? "danger" : "good"} />
+                </div>
+              </section>
+            )}
+
+            <section>
+              <h2 className="mb-3 text-sm font-semibold">Page-by-Page Analysis</h2>
               <div className="space-y-2">
                 <AccordionRow
+                  rank={1}
                   title={scrapeResult.target.title}
-                  subtitle={`${scrapeResult.target.url} · ${scrapeResult.target.wordCount} words · ${scrapeResult.target.entityCount} entities`}
-                  badge={
-                    <span className="rounded bg-[#1f3a2a] px-2 py-0.5 text-xs text-[#6bcf6b]">
-                      Your page
+                  subtitle={scrapeResult.target.url}
+                  metaRow={
+                    <div className="flex gap-3 text-[11px]" style={{ color: C.muted }}>
+                      <span>{scrapeResult.target.wordCount} words</span>
+                      <span>{scrapeResult.target.entityCount} entities</span>
+                      <span>{scrapeResult.target.informationGain.length} signals</span>
+                    </div>
+                  }
+                  badge={<Badge color={C.green}>YOUR PAGE</Badge>}
+                  rightMeta={
+                    <span className="flex items-center gap-1.5 text-xs font-medium">
+                      <span
+                        className="h-1.5 w-1.5 rounded-full"
+                        style={{
+                          backgroundColor:
+                            scrapeResult.target.topicalCoverageScore >= 75
+                              ? C.green
+                              : scrapeResult.target.topicalCoverageScore >= 45
+                                ? C.gold
+                                : C.red,
+                        }}
+                      />
+                      {scrapeResult.target.topicalCoverageScore}%
                     </span>
                   }
                   defaultOpen
@@ -723,277 +1076,242 @@ export default function Home() {
                 {scrapeResult.competitors.map((c, i) => (
                   <AccordionRow
                     key={i}
+                    rank={i + 2}
                     title={c.title}
-                    subtitle={`${c.url} · ${c.wordCount} words · ${c.entityCount} entities`}
+                    subtitle={c.url}
+                    metaRow={
+                      <div className="flex gap-3 text-[11px]" style={{ color: C.muted }}>
+                        <span>{c.wordCount} words</span>
+                        <span>{c.entityCount} entities</span>
+                        <span>{c.informationGain.length} signals</span>
+                      </div>
+                    }
+                    rightMeta={
+                      <span className="flex items-center gap-1.5 text-xs font-medium">
+                        <span
+                          className="h-1.5 w-1.5 rounded-full"
+                          style={{
+                            backgroundColor:
+                              c.topicalCoverageScore >= 75 ? C.green : c.topicalCoverageScore >= 45 ? C.gold : C.red,
+                          }}
+                        />
+                        {c.topicalCoverageScore}%
+                      </span>
+                    }
                   >
                     <PageDetail page={c} />
                   </AccordionRow>
                 ))}
               </div>
-            </div>
-
-            <div>
-              <p className="mb-2 text-xs font-medium uppercase tracking-wide text-[#999]">
-                Top semantic keywords for this term
-              </p>
-              <div className="rounded-md border border-[#1f1f1f] bg-[#121212] p-4">
-                <ul className="space-y-1.5 text-sm">
-                  {scrapeResult.topKeywords.map((k, i) => (
-                    <li key={i} className="flex items-center justify-between">
-                      <span className="text-[#d8d8d8]">
-                        {k.term} <span className="text-xs text-[#666]">({k.type})</span>
-                        {k.presentInTarget && (
-                          <span className="ml-2 text-xs text-[#6bcf6b]">✓ in target</span>
-                        )}
-                      </span>
-                      <span className="text-xs text-[#888]">
-                        {k.appearsInCompetitors} competitor(s) · {k.avgSalience.toFixed(2)}
-                      </span>
-                    </li>
-                  ))}
-                </ul>
-              </div>
-            </div>
-          </section>
-        )}
-
-        {scrapeResult && (
-          <section className="border-t border-[#1f1f1f] pt-8">
-            <h2 className="mb-4 text-sm font-semibold text-[#e8e8e8]">Step 2 — Optimize</h2>
-            <div className="flex gap-2">
-              <button
-                onClick={handleOptimize}
-                disabled={optimizeRunning}
-                className="rounded-md bg-[#e8e8e8] px-4 py-2 text-sm font-medium text-[#0d0d0d] transition hover:bg-white disabled:opacity-50"
-              >
-                {optimizeRunning ? "Optimizing..." : "Run gap analysis + rewrite suggestions"}
-              </button>
-              {optimizeRunning && (
-                <button
-                  onClick={handleStopOptimize}
-                  className="rounded-md border border-[#3a1f1f] bg-[#1a1212] px-4 py-2 text-sm font-medium text-[#ff6b6b] transition hover:bg-[#241515]"
-                >
-                  Stop
-                </button>
-              )}
-            </div>
-
-            <StepStatus steps={optimizeSteps} running={optimizeRunning} />
-            {optimizeError && <ErrorBox message={optimizeError} />}
+            </section>
 
             {optimizeResult && (
-              <div className="mt-6 space-y-6">
-                <WarningsBox warnings={optimizeResult.gapReport.errors} />
-
-                <div>
-                  <p className="mb-2 text-xs font-medium uppercase tracking-wide text-[#999]">
-                    Missing entities — competitors mention these, your target page doesn&apos;t
-                  </p>
-                  <div className="rounded-md border border-[#1f1f1f] bg-[#121212] p-4">
-                    {optimizeResult.gapReport.missingEntities.length > 0 ? (
-                      <ul className="space-y-1.5 text-sm">
-                        {optimizeResult.gapReport.missingEntities.map((e, i) => (
-                          <li key={i} className="flex justify-between">
-                            <span className="text-[#d8d8d8]">
-                              {e.name} <span className="text-xs text-[#666]">({e.type})</span>
-                            </span>
-                            <span className="text-xs text-[#888]">
-                              {e.appearsInCompetitors} competitor(s) · {e.avgSalienceInCompetitors.toFixed(2)}
-                            </span>
-                          </li>
-                        ))}
-                      </ul>
-                    ) : (
-                      <p className="text-sm text-[#888]">No entity gaps found.</p>
-                    )}
-                  </div>
-                </div>
-
-                <div>
-                  <p className="mb-2 text-xs font-medium uppercase tracking-wide text-[#999]">
-                    Uncovered passages — genuine gaps only (score &lt; {optimizeResult.gapReport.semanticCoverage.realGapThreshold})
-                  </p>
-                  <p className="mb-2 text-xs text-[#666]">
-                    {optimizeResult.gapReport.semanticCoverage.partialMatchCount} additional passage(s) were loose/partial
-                    matches (between {optimizeResult.gapReport.semanticCoverage.realGapThreshold} and{" "}
-                    {optimizeResult.gapReport.semanticCoverage.strongMatchThreshold}) — not strong enough to count as
-                    covered, but not weak enough to call a real gap, so they're excluded from this list.
-                  </p>
-                  <div className="space-y-3 rounded-md border border-[#1f1f1f] bg-[#121212] p-4">
-                    {optimizeResult.gapReport.semanticCoverage.uncoveredPassages.length > 0 ? (
-                      optimizeResult.gapReport.semanticCoverage.uncoveredPassages.slice(0, 10).map((p, i) => (
-                        <div key={i} className="border-b border-[#1f1f1f] pb-3 last:border-0 last:pb-0">
-                          <p className="mb-1 text-xs text-[#666]">
-                            {p.competitorUrl} · score: {p.bestMatchScore.toFixed(2)}
-                          </p>
-                          <p className="text-sm text-[#d8d8d8]">{p.competitorChunk}</p>
-                        </div>
-                      ))
-                    ) : (
-                      <p className="text-sm text-[#888]">None found.</p>
-                    )}
-                  </div>
-                </div>
-
-                <div>
-                  <p className="mb-2 text-xs font-medium uppercase tracking-wide text-[#999]">
-                    Projected impact — recomputed, not invented
-                  </p>
-                  <div className="rounded-md border border-[#1f1f1f] bg-[#121212] p-4">
-                    <div className="flex items-center gap-6">
-                      <div>
-                        <p className="text-2xl font-semibold text-[#d8d8d8]">
-                          {optimizeResult.optimization.overallCurrentScore}
-                        </p>
-                        <p className="text-xs text-[#888]">Current semantic coverage</p>
-                      </div>
-                      <span className="text-[#666]">→</span>
-                      <div>
-                        <p
-                          className={
-                            "text-2xl font-semibold " +
-                            (optimizeResult.optimization.overallProjectedScore === null
-                              ? "text-[#888]"
-                              : optimizeResult.optimization.overallProjectedScore >
-                                  optimizeResult.optimization.overallCurrentScore
-                                ? "text-[#6bcf6b]"
-                                : "text-[#d8d8d8]")
-                          }
-                        >
-                          {optimizeResult.optimization.overallProjectedScore === null
-                            ? "N/A"
-                            : optimizeResult.optimization.overallProjectedScore}
-                        </p>
-                        <p className="text-xs text-[#888]">Projected after applying suggestions</p>
-                      </div>
-                    </div>
-                    {optimizeResult.optimization.overallProjectedScore === null && (
-                      <p className="mt-3 text-xs text-[#e8c468]">
-                        Could not recompute projected score: {optimizeResult.optimization.projectedScoreUnavailableReason}.
-                        This is reported as unavailable rather than guessed.
-                      </p>
-                    )}
-                  </div>
-                </div>
-
-                <div>
+              <section className="grid gap-4 sm:grid-cols-2">
+                <div className="rounded-xl border p-4" style={{ borderColor: C.border, backgroundColor: C.card }}>
                   <div className="mb-2 flex items-center justify-between">
-                    <p className="text-xs font-medium uppercase tracking-wide text-[#999]">
-                      Section-by-section optimization — grounded in {optimizeResult.optimization.sectionsFound} real section(s)
-                    </p>
-                    <button onClick={handleCopy} className="text-xs text-[#888] hover:text-[#e8e8e8]">
-                      {copied ? "Copied" : "Copy all"}
-                    </button>
+                    <p className="text-sm font-semibold">Keywords</p>
+                    <Badge color={C.red}>{filteredMissingKeywords.length} missing</Badge>
                   </div>
-                  {optimizeResult.optimization.usedFallbackAssignment && (
-                    <p className="mb-2 text-xs text-[#e8c468]">
-                      Note: section assignment used a keyword-overlap fallback (Vertex embeddings
-                      were unavailable: {optimizeResult.optimization.fallbackReason}). Less
-                      semantically precise than embeddings-based assignment, but still real and
-                      deterministic.
-                    </p>
-                  )}
-
-                  {optimizeResult.optimization.sections.length === 0 ? (
-                    <p className="text-sm text-[#888]">No section-level changes needed.</p>
-                  ) : (
-                    <div className="space-y-3">
-                      {optimizeResult.optimization.sections.map((s, i) => (
-                        <div key={i} className="rounded-md border border-[#1f1f1f] bg-[#121212] p-4">
-                          <div className="mb-2 flex items-center justify-between">
-                            <p className="text-sm font-medium text-[#e8e8e8]">
-                              {s.heading}
-                              {s.isNew && (
-                                <span className="ml-2 rounded bg-[#1f3a2a] px-1.5 py-0.5 text-xs text-[#6bcf6b]">
-                                  new section
-                                </span>
-                              )}
-                            </p>
-                            <span className="text-xs text-[#888]">
-                              Citability:{" "}
-                              <span className={s.citabilityBefore >= 40 ? "text-[#6bcf6b]" : "text-[#ff6b6b]"}>
-                                {s.citabilityBefore}
-                              </span>
-                              {" → "}
-                              <span className={s.citabilityAfter >= 40 ? "text-[#6bcf6b]" : "text-[#ff6b6b]"}>
-                                {s.citabilityAfter}
-                              </span>
-                            </span>
-                          </div>
-
-                          {!s.isNew && (
-                            <div className="mb-2">
-                              <p className="mb-1 text-xs uppercase tracking-wide text-[#666]">Current</p>
-                              <p className="text-sm text-[#999]">{s.currentText.slice(0, 300)}</p>
-                            </div>
-                          )}
-
-                          <div className="mb-2">
-                            <p className="mb-1 text-xs uppercase tracking-wide text-[#666]">
-                              {s.isNew ? "Proposed new content" : "Suggested"}
-                            </p>
-                            <p className="text-sm text-[#d8d8d8]">{s.suggestedText}</p>
-                          </div>
-
-                          {s.entitiesAssigned.length > 0 && (
-                            <div className="mb-2 flex flex-wrap gap-1.5">
-                              {s.entitiesAssigned.map((e, j) => (
-                                <span key={j} className="rounded bg-[#1f1f1f] px-2 py-0.5 text-xs text-[#aaa]">
-                                  {e}
-                                </span>
-                              ))}
-                            </div>
-                          )}
-
-                          {s.relevanceImpact && (
-                            <p className="text-xs text-[#888]">{s.relevanceImpact}</p>
-                          )}
-                        </div>
-                      ))}
-                    </div>
-                  )}
+                  <p className="mb-2 text-xs" style={{ color: C.muted }}>
+                    You cover {scrapeResult.topKeywords.length - infoGainCount} of {scrapeResult.topKeywords.length} (
+                    {Math.round(((scrapeResult.topKeywords.length - infoGainCount) / Math.max(1, scrapeResult.topKeywords.length)) * 100)}%)
+                  </p>
+                  <ProgressBar
+                    percent={((scrapeResult.topKeywords.length - infoGainCount) / Math.max(1, scrapeResult.topKeywords.length)) * 100}
+                    color={C.red}
+                  />
+                  <input
+                    type="text"
+                    value={keywordFilter}
+                    onChange={(e) => setKeywordFilter(e.target.value)}
+                    placeholder="Filter keywords..."
+                    className="mt-3 w-full rounded-lg border px-3 py-1.5 text-xs outline-none"
+                    style={{ borderColor: C.border, backgroundColor: C.bg, color: C.text }}
+                  />
+                  <div className="mt-3 max-h-64 space-y-1.5 overflow-y-auto">
+                    {filteredMissingKeywords.map((k, i) => (
+                      <div key={i} className="flex items-center justify-between text-xs">
+                        <span style={{ color: "#c9cedb" }}>{k.term}</span>
+                        <Badge color={C.blue}>{k.appearsInCompetitors}/{scrapeResult.competitors.length} sites</Badge>
+                      </div>
+                    ))}
+                  </div>
                 </div>
-              </div>
+
+                <div className="rounded-xl border p-4" style={{ borderColor: C.border, backgroundColor: C.card }}>
+                  <div className="mb-2 flex items-center justify-between">
+                    <p className="text-sm font-semibold">Entities</p>
+                    <Badge color={C.red}>{filteredMissingEntities.length} missing</Badge>
+                  </div>
+                  <p className="mb-2 text-xs" style={{ color: C.muted }}>
+                    You cover {scrapeResult.target.entityCount} entities total
+                  </p>
+                  <ProgressBar
+                    percent={
+                      (scrapeResult.target.entityCount /
+                        Math.max(1, scrapeResult.target.entityCount + criticalGapCount)) *
+                      100
+                    }
+                    color={C.red}
+                  />
+                  <input
+                    type="text"
+                    value={entityFilter}
+                    onChange={(e) => setEntityFilter(e.target.value)}
+                    placeholder="Filter entities..."
+                    className="mt-3 w-full rounded-lg border px-3 py-1.5 text-xs outline-none"
+                    style={{ borderColor: C.border, backgroundColor: C.bg, color: C.text }}
+                  />
+                  <div className="mt-3 max-h-64 space-y-1.5 overflow-y-auto">
+                    {filteredMissingEntities.map((e, i) => (
+                      <div key={i} className="flex items-center justify-between text-xs">
+                        <span style={{ color: "#c9cedb" }}>{e.name}</span>
+                        <Badge color={C.purple}>{e.type}</Badge>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </section>
             )}
-          </section>
-        )}
 
-        {scrapeResult && (
-          <section className="border-t border-[#1f1f1f] pt-8">
-            <h2 className="mb-4 text-sm font-semibold text-[#e8e8e8]">
-              Step 3 — Structural Check (optional)
-            </h2>
-            <button
-              onClick={handleStructuralCheck}
-              disabled={structuralRunning}
-              className="rounded-md bg-[#e8e8e8] px-4 py-2 text-sm font-medium text-[#0d0d0d] transition hover:bg-white disabled:opacity-50"
-            >
-              {structuralRunning ? "Checking..." : "Run structural check"}
-            </button>
+            {optimizeResult && (
+              <section>
+                <h2 className="mb-3 text-sm font-semibold">Entity Gap Analysis</h2>
+                <div className="overflow-x-auto rounded-xl border" style={{ borderColor: C.border }}>
+                  <table className="w-full text-left text-xs">
+                    <thead>
+                      <tr style={{ backgroundColor: C.card, color: C.muted }}>
+                        <th className="px-4 py-2.5 font-medium">Missing Entity</th>
+                        <th className="px-4 py-2.5 font-medium">Competitor Coverage</th>
+                        <th className="px-4 py-2.5 font-medium">Suggested Placement</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {optimizeResult.gapReport.missingEntities.slice(0, 30).map((e, i) => (
+                        <tr key={i} style={{ borderTop: `1px solid ${C.border}`, backgroundColor: C.bg }}>
+                          <td className="px-4 py-2.5" style={{ color: C.text }}>{e.name}</td>
+                          <td className="px-4 py-2.5">
+                            <div className="flex items-center gap-2">
+                              <div className="w-20">
+                                <ProgressBar
+                                  percent={(e.appearsInCompetitors / Math.max(1, scrapeResult.competitors.length)) * 100}
+                                  color={C.blue}
+                                />
+                              </div>
+                              <span style={{ color: C.muted }}>
+                                {e.appearsInCompetitors}/{scrapeResult.competitors.length}
+                              </span>
+                            </div>
+                          </td>
+                          <td className="px-4 py-2.5">
+                            <Badge color={C.purple}>{findPlacement(e.name)}</Badge>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </section>
+            )}
 
-            {structuralError && <ErrorBox message={structuralError} />}
+            <section className="rounded-xl border p-5" style={{ borderColor: C.border, backgroundColor: C.card }}>
+              <h2 className="mb-3 text-sm font-semibold">Step 3 — Structural Check (optional)</h2>
+              <button
+                onClick={handleStructuralCheck}
+                disabled={structuralRunning}
+                className="rounded-lg px-4 py-2 text-sm font-medium disabled:opacity-50"
+                style={{ backgroundColor: C.green, color: C.bg }}
+              >
+                {structuralRunning ? "Checking..." : "Run structural check"}
+              </button>
 
-            {structuralResult && (
-              <div className="mt-4">
-                <p className="mb-2 text-xs font-medium uppercase tracking-wide text-[#999]">
-                  Structural check — {structuralResult.score}/100
-                </p>
-                <div className="space-y-2 rounded-md border border-[#1f1f1f] bg-[#121212] p-4">
-                  {structuralResult.findings.map((f, i) => (
-                    <div key={i} className="text-sm">
-                      <span className={f.passed ? "text-[#6bcf6b]" : "text-[#ff6b6b]"}>
-                        {f.passed ? "✓" : "✗"}
-                      </span>{" "}
-                      <span className="text-[#d8d8d8]">{f.rule}</span>
-                      {!f.passed && (
-                        <p className="ml-5 mt-0.5 text-xs text-[#888]">{f.detail}</p>
-                      )}
-                    </div>
+              {structuralError && <ErrorBox message={structuralError} />}
+
+              {structuralResult && (
+                <div className="mt-4">
+                  <p className="mb-2 text-xs font-medium uppercase tracking-wide" style={{ color: C.muted }}>
+                    Structural check — {structuralResult.score}/100
+                  </p>
+                  <div className="space-y-2 rounded-lg p-4" style={{ backgroundColor: C.bg }}>
+                    {structuralResult.findings.map((f, i) => (
+                      <div key={i} className="text-sm">
+                        <span style={{ color: f.passed ? C.green : C.red }}>{f.passed ? "✓" : "✗"}</span>{" "}
+                        <span style={{ color: "#c9cedb" }}>{f.rule}</span>
+                        {!f.passed && (
+                          <p className="ml-5 mt-0.5 text-xs" style={{ color: C.muted }}>{f.detail}</p>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </section>
+
+            {optimizeResult && entityTypes.length > 0 && (
+              <section>
+                <div className="flex flex-wrap gap-2">
+                  <button
+                    onClick={() => setActiveTypeFilter(null)}
+                    className="rounded-full px-3 py-1 text-xs font-medium"
+                    style={activeTypeFilter === null ? pillStyle(C.blue) : { color: C.muted, border: `1px solid ${C.border}` }}
+                  >
+                    All types
+                  </button>
+                  {entityTypes.map((t) => (
+                    <button
+                      key={t}
+                      onClick={() => setActiveTypeFilter(t)}
+                      className="rounded-full px-3 py-1 text-xs font-medium"
+                      style={activeTypeFilter === t ? pillStyle(C.blue) : { color: C.muted, border: `1px solid ${C.border}` }}
+                    >
+                      {t}
+                    </button>
                   ))}
                 </div>
-              </div>
+              </section>
             )}
-          </section>
+
+            <section>
+              <h2 className="mb-3 text-sm font-semibold">Scrape Report</h2>
+              <div className="overflow-x-auto rounded-xl border" style={{ borderColor: C.border }}>
+                <table className="w-full text-left text-xs">
+                  <thead>
+                    <tr style={{ backgroundColor: C.card, color: C.muted }}>
+                      <th className="px-4 py-2.5 font-medium">URL</th>
+                      <th className="px-4 py-2.5 font-medium">Role</th>
+                      <th className="px-4 py-2.5 font-medium">Status</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr style={{ borderTop: `1px solid ${C.border}`, backgroundColor: C.bg }}>
+                      <td className="px-4 py-2.5" style={{ color: C.text }}>{scrapeResult.target.url}</td>
+                      <td className="px-4 py-2.5"><Badge color={C.green}>Target</Badge></td>
+                      <td className="px-4 py-2.5">
+                        {scrapeResult.target.fetchError ? (
+                          <span style={{ color: C.red }}>{scrapeResult.target.fetchError}</span>
+                        ) : (
+                          <span style={{ color: C.green }}>OK</span>
+                        )}
+                      </td>
+                    </tr>
+                    {scrapeResult.competitors.map((c, i) => (
+                      <tr key={i} style={{ borderTop: `1px solid ${C.border}`, backgroundColor: C.bg }}>
+                        <td className="px-4 py-2.5" style={{ color: C.text }}>{c.url}</td>
+                        <td className="px-4 py-2.5"><Badge color={C.blue}>Competitor</Badge></td>
+                        <td className="px-4 py-2.5">
+                          {c.fetchError ? (
+                            <span style={{ color: C.red }}>{c.fetchError}</span>
+                          ) : (
+                            <span style={{ color: C.green }}>OK</span>
+                          )}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </section>
+          </>
         )}
       </main>
     </div>

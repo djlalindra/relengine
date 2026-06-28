@@ -179,7 +179,10 @@ async function sleep(ms: number): Promise<void> {
  * fresh GCP projects with low default quotas for online prediction
  * requests), rather than failing the whole audit on a transient 429.
  */
-export async function getEmbeddings(texts: string[]): Promise<number[][]> {
+export async function getEmbeddings(
+  texts: string[],
+  onWait?: (message: string) => void
+): Promise<number[][]> {
   if (texts.length === 0) return [];
 
   const auth = getAuth();
@@ -194,7 +197,14 @@ export async function getEmbeddings(texts: string[]): Promise<number[][]> {
   // 40 stays comfortably under payload-size limits for paragraph-length
   // chunks while meaningfully cutting request count vs. a smaller batch.
   const BATCH_SIZE = 40;
-  const MAX_RETRIES = 4;
+  // Google Cloud quotas of this kind are typically per-minute windows.
+  // The previous retry budget (4 attempts, ~15s total) rarely outlasted
+  // an exhausted per-minute window. This extends to 7 attempts with a
+  // longer, capped backoff (up to 30s per wait), giving a realistic
+  // chance of actually waiting out the quota reset rather than giving up
+  // and falling back to a lesser method.
+  const MAX_RETRIES = 7;
+  const MAX_BACKOFF_MS = 30000;
   const allEmbeddings: number[][] = [];
 
   for (let i = 0; i < texts.length; i += BATCH_SIZE) {
@@ -223,7 +233,10 @@ export async function getEmbeddings(texts: string[]): Promise<number[][]> {
         break;
       } catch (err) {
         if (isRetriableError(err) && attempt < MAX_RETRIES) {
-          const backoffMs = 1000 * Math.pow(2, attempt);
+          const backoffMs = Math.min(MAX_BACKOFF_MS, 2000 * Math.pow(2, attempt));
+          onWait?.(
+            `Vertex quota hit, waiting ${Math.round(backoffMs / 1000)}s before retry (attempt ${attempt + 1}/${MAX_RETRIES})...`
+          );
           await sleep(backoffMs);
           attempt++;
           continue;

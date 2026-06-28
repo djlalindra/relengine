@@ -6,6 +6,7 @@ import {
 } from "@/lib/pipeline/content-extractor";
 import { extractEntitiesForPages, buildTopKeywords, isJunkEntity } from "@/lib/pipeline/gap-report";
 import { computeInformationGain } from "@/lib/pipeline/information-gain";
+import { computeTopicalCoverageScore } from "@/lib/pipeline/topical-score";
 
 const MAX_URLS = 15;
 
@@ -155,6 +156,13 @@ export async function POST(req: NextRequest) {
         const infoGainResults = computeInformationGain(allPageTexts);
         const targetInfoGain = infoGainResults[0]?.uniqueTerms ?? [];
 
+        const topKeywordTerms = topKeywords.map((k) => k.term);
+        const targetTopicalScore = computeTopicalCoverageScore(
+          target.text,
+          targetEntities.map((e) => e.name),
+          topKeywordTerms
+        );
+
         const result = {
           target: {
             url: target.url,
@@ -166,11 +174,17 @@ export async function POST(req: NextRequest) {
             entityCount: cleanTargetEntities.length,
             rawText: target.text,
             informationGain: targetInfoGain,
+            topicalCoverageScore: targetTopicalScore,
           },
           competitors: competitors.map((c, idx) => {
             const entityList = competitorEntityLists.find((e) => e.url === c.url);
             const entities = (entityList?.entities ?? []).filter(
               (e) => !isJunkEntity(e.name, e.type)
+            );
+            const topicalScore = computeTopicalCoverageScore(
+              c.text,
+              (entityList?.entities ?? []).map((e) => e.name),
+              topKeywordTerms
             );
             return {
               url: c.url,
@@ -183,6 +197,7 @@ export async function POST(req: NextRequest) {
               rawText: c.text,
               // infoGainResults[0] is the target; competitors start at index 1.
               informationGain: infoGainResults[idx + 1]?.uniqueTerms ?? [],
+              topicalCoverageScore: topicalScore,
             };
           }),
           topKeywords,

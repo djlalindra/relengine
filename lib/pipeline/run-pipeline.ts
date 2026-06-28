@@ -449,8 +449,6 @@ export type AuditPipelineResult = {
 export type RewriteSuggestionsResult = {
   suggestions: string;
   sectionsFound: number;
-  usedFallbackAssignment: boolean;
-  fallbackReason?: string;
   sectionCitability: { heading: string; score: number; signals: string[] }[];
 };
 
@@ -482,7 +480,6 @@ async function generateRewriteSuggestions(
     return {
       suggestions: "No significant gaps found -- the target page's entity coverage and semantic coverage are already in line with the competitor set analyzed.",
       sectionsFound: 0,
-      usedFallbackAssignment: false,
       sectionCitability: [],
     };
   }
@@ -490,18 +487,13 @@ async function generateRewriteSuggestions(
   onProgress("Splitting target page into real sections...");
   const sections = splitIntoSections(target.text);
 
-  onProgress("Assigning gaps to the section they're most related to...");
+  onProgress("Assigning gaps to the section they're most related to (Vertex Embeddings)...");
   const assigned = await assignGapsToSections(
     sections,
-    gapReport.missingEntities.slice(0, 25),
-    gapReport.semanticCoverage.uncoveredPassages.slice(0, 15)
+    gapReport.missingEntities,
+    gapReport.semanticCoverage.uncoveredPassages,
+    onProgress
   );
-
-  if (assigned.usedFallback) {
-    onProgress(
-      `Note: embeddings-based assignment unavailable (${assigned.fallbackReason}). Used keyword-overlap fallback instead.`
-    );
-  }
 
   // Group assigned gaps by section index for a clean per-section prompt.
   const bySectionEntities = new Map<number, typeof assigned.entityAssignments>();
@@ -590,8 +582,6 @@ async function generateRewriteSuggestions(
   return {
     suggestions,
     sectionsFound: sections.length,
-    usedFallbackAssignment: assigned.usedFallback,
-    fallbackReason: assigned.fallbackReason,
     sectionCitability,
   };
 }

@@ -22,13 +22,13 @@ export type StructuredOptimizationResult = {
   overallProjectedScore: number | null;
   projectedScoreUnavailableReason?: string;
   sectionsFound: number;
-  usedFallbackAssignment: boolean;
-  fallbackReason?: string;
 };
 
 const OPTIMIZER_JSON_SYSTEM = `You are a senior SEO/AEO content strategist. You are given a target page's real sections, each with specific gaps (missing entities, competitor passages) already assigned to it, plus a citability score showing whether the section currently has any verifiable claim.
 
-For each section listed, write ACTUAL REWRITTEN BODY TEXT for that section that naturally incorporates the assigned gaps. For sections proposed as new, write actual new section body text.
+For each EXISTING section listed, write ACTUAL REWRITTEN BODY TEXT for that section that naturally incorporates its assigned gaps.
+
+You are also given a pool of gaps that didn't closely match any existing section. Do NOT lump all of these into one generic section. Instead, group them by genuine topical relatedness and propose AS MANY distinct new sections as the material actually supports -- a page with gaps about family impact, financial compensation, and the legal process should get three separate proposed sections, not one. Give each proposed section its own specific, descriptive heading (not generic labels like "Additional Coverage" or "Miscellaneous"). If a gap is too thin or unrelated to justify its own section, it is acceptable to omit it rather than force it in somewhere irrelevant -- but err toward proposing real sections over dropping content, since the goal is to surface real opportunities, not minimize them.
 
 Research shows including real citations, quotations, and statistics is the most effective lever for AI-generated answer visibility (up to 40% boost). If a competitor passage given to you contains a real statistic, you may suggest sourcing a similar verifiable figure -- frame it as "[CITE: similar to competitor data showing X]" rather than inventing a number as the target's own fact. Never fabricate a specific number presented as established fact.
 
@@ -37,7 +37,7 @@ Keep language plain and direct. No buzzwords, no "in today's landscape" filler.
 Respond ONLY with valid JSON, no markdown fences, no preamble, in this exact shape:
 {
   "sections": [
-    {"heading": "exact heading given", "isNew": false, "suggestedText": "full rewritten body text", "relevanceImpact": "one sentence on why this matters"}
+    {"heading": "exact heading given for existing sections, OR your own specific heading for new sections", "isNew": false, "suggestedText": "full rewritten or new body text", "relevanceImpact": "one sentence on why this matters"}
   ]
 }`;
 
@@ -81,23 +81,22 @@ export async function generateStructuredOptimization(
       overallCurrentScore,
       overallProjectedScore: overallCurrentScore,
       sectionsFound: 0,
-      usedFallbackAssignment: false,
     };
   }
 
   onProgress("Splitting target page into real sections...");
   const sections = splitIntoSections(target.text);
 
-  onProgress("Assigning gaps to the section they're most related to...");
+  onProgress("Assigning gaps to the section they're most related to (Vertex Embeddings)...");
+  // No cap-then-drop: every missing entity and uncovered passage is
+  // considered, so opportunities aren't silently lost to an arbitrary
+  // slice before assignment even runs.
   const assigned = await assignGapsToSections(
     sections,
-    gapReport.missingEntities.slice(0, 25),
-    gapReport.semanticCoverage.uncoveredPassages.slice(0, 15)
+    gapReport.missingEntities,
+    gapReport.semanticCoverage.uncoveredPassages,
+    onProgress
   );
-
-  if (assigned.usedFallback) {
-    onProgress(`Note: using keyword-overlap fallback (${assigned.fallbackReason}).`);
-  }
 
   const bySectionEntities = new Map<number, typeof assigned.entityAssignments>();
   const bySectionPassages = new Map<number, typeof assigned.passageAssignments>();
@@ -146,13 +145,16 @@ export async function generateStructuredOptimization(
     });
   });
 
+  // Unassigned gaps are handed over as ONE pool, but the prompt explicitly
+  // instructs the model to split this into multiple genuinely distinct
+  // new sections rather than one forced catch-all -- this is the direct
+  // fix for opportunities being collapsed into a single generic bucket.
   const newEntities = bySectionEntities.get(-1) ?? [];
   const newPassages = bySectionPassages.get(-1) ?? [];
   if (newEntities.length > 0 || newPassages.length > 0) {
-    const proposedHeading = "Additional Coverage";
     promptBlocks.push(
       [
-        `### Section: "${proposedHeading}" (NEW -- propose this section)`,
+        `### Unassigned gap pool (propose MULTIPLE distinct new sections from this, grouped by real topical similarity -- do not combine unrelated items into one section):`,
         newEntities.length > 0 ? "Entities to cover: " + newEntities.map((e) => e.name).join(", ") : "",
         newPassages.length > 0
           ? "Related competitor passages: " + newPassages.map((p) => `"${p.competitorChunk.slice(0, 150)}"`).join(" | ")
@@ -161,12 +163,6 @@ export async function generateStructuredOptimization(
         .filter(Boolean)
         .join("\n")
     );
-    sectionMeta.push({
-      heading: proposedHeading,
-      isNew: true,
-      currentText: "",
-      entitiesAssigned: newEntities.map((e) => e.name),
-    });
   }
 
   onProgress("Generating structured per-section rewrites...");
@@ -175,7 +171,7 @@ export async function generateStructuredOptimization(
     { role: "user", content: `Target page: ${target.url}\n\n${promptBlocks.join("\n\n")}` },
   ];
 
-  const rawResponse = await callModel(messages, { temperature: 0.5, maxTokens: 3000, signal });
+  const rawResponse = await callModel(messages, { temperature: 0.5, maxTokens: 4000, signal });
 
   let parsedSections: { heading: string; isNew: boolean; suggestedText: string; relevanceImpact: string }[];
   try {
@@ -187,20 +183,44 @@ export async function generateStructuredOptimization(
     );
   }
 
-  const sectionResults: SectionOptimization[] = sectionMeta.map((meta) => {
+  // Existing sections: matched back to their known metadata by exact
+  // heading. New sections: the model may propose any number of them with
+  // its own headings -- anything marked isNew=true that doesn't match an
+  // existing section's heading is accepted as a genuine new proposal,
+  // rather than being forced to match one predetermined placeholder.
+  const existingHeadings = new Set(sectionMeta.map((m) => m.heading));
+
+  const sectionResults: SectionOptimization[] = [];
+
+  for (const meta of sectionMeta) {
     const match = parsedSections.find((p) => p.heading === meta.heading);
     const suggestedText = match?.suggestedText ?? meta.currentText;
-    return {
+    sectionResults.push({
       heading: meta.heading,
-      isNew: meta.isNew,
+      isNew: false,
       currentText: meta.currentText,
       suggestedText,
       entitiesAssigned: meta.entitiesAssigned,
       citabilityBefore: meta.currentText ? computeCitability(meta.currentText).score : 0,
       citabilityAfter: computeCitability(suggestedText).score,
       relevanceImpact: match?.relevanceImpact ?? "",
-    };
-  });
+    });
+  }
+
+  for (const parsed of parsedSections) {
+    if (parsed.isNew && !existingHeadings.has(parsed.heading)) {
+      sectionResults.push({
+        heading: parsed.heading,
+        isNew: true,
+        currentText: "",
+        suggestedText: parsed.suggestedText,
+        entitiesAssigned: [...newEntities.map((e) => e.name), ...newPassages.map(() => "")].filter(Boolean),
+        citabilityBefore: 0,
+        citabilityAfter: computeCitability(parsed.suggestedText).score,
+        relevanceImpact: parsed.relevanceImpact ?? "",
+      });
+    }
+  }
 
   onProgress("Recomputing semantic coverage with suggested changes applied...");
   let overallProjectedScore: number | null = null;
@@ -224,7 +244,5 @@ export async function generateStructuredOptimization(
     overallProjectedScore,
     projectedScoreUnavailableReason,
     sectionsFound: sections.length,
-    usedFallbackAssignment: assigned.usedFallback,
-    fallbackReason: assigned.fallbackReason,
   };
 }
