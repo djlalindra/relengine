@@ -33,7 +33,33 @@ async function isAuthenticated(req: NextRequest): Promise<boolean> {
 }
 
 export async function proxy(req: NextRequest) {
-  const { pathname } = req.nextUrl;
+  const { pathname, origin } = req.nextUrl;
+
+  // Handled directly here rather than via app/.well-known/* route files:
+  // Next.js's App Router file-based routing does not reliably resolve
+  // dot-prefixed folder segments (reproduced locally -- the request hangs
+  // indefinitely with zero bytes returned, not a clean 404). Middleware
+  // matches on raw pathname strings, which sidesteps that entirely.
+  if (pathname === "/.well-known/oauth-protected-resource") {
+    return NextResponse.json({
+      resource: `${origin}/api/mcp`,
+      authorization_servers: [origin],
+    });
+  }
+
+  if (pathname === "/.well-known/oauth-authorization-server") {
+    return NextResponse.json({
+      issuer: origin,
+      authorization_endpoint: `${origin}/api/oauth/authorize`,
+      token_endpoint: `${origin}/api/oauth/token`,
+      registration_endpoint: `${origin}/api/oauth/register`,
+      response_types_supported: ["code"],
+      grant_types_supported: ["authorization_code", "refresh_token"],
+      code_challenge_methods_supported: ["S256"],
+      token_endpoint_auth_methods_supported: ["none"],
+      scopes_supported: ["mcp"],
+    });
+  }
 
   const isPublic = PUBLIC_PATHS.some((p) => pathname.startsWith(p));
   if (isPublic) {
