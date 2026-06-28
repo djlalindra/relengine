@@ -45,6 +45,43 @@ function stripJsonFences(text: string): string {
   return text.trim().replace(/^```(?:json)?\s*/, "").replace(/\s*```$/, "").trim();
 }
 
+/**
+ * Extracts a JSON object from a model response that may include preamble
+ * or trailing text despite being told not to ("We need to look at each
+ * section..." before the actual JSON, a real observed failure mode with
+ * some models). Strips markdown fences first, then if that alone doesn't
+ * parse, falls back to taking the substring between the first '{' and the
+ * last '}' -- the JSON object is usually still there, just not alone.
+ */
+function extractJson(text: string): unknown {
+  const fenceStripped = stripJsonFences(text);
+
+  try {
+    return JSON.parse(fenceStripped);
+  } catch {
+    // fall through to bracket extraction
+  }
+
+  const firstBrace = fenceStripped.indexOf("{");
+  const lastBrace = fenceStripped.lastIndexOf("}");
+
+  if (firstBrace === -1 || lastBrace === -1 || lastBrace <= firstBrace) {
+    throw new Error(
+      `No JSON object found in model response. Response started with: "${text.slice(0, 80)}"`
+    );
+  }
+
+  const candidate = fenceStripped.slice(firstBrace, lastBrace + 1);
+  try {
+    return JSON.parse(candidate);
+  } catch (err) {
+    throw new Error(
+      `Found a JSON-like block but it didn't parse: ${err instanceof Error ? err.message : "unknown error"}. ` +
+        `Block started with: "${candidate.slice(0, 80)}"`
+    );
+  }
+}
+
 function buildOptimizedFullText(
   originalSections: PageSection[],
   optimizations: SectionOptimization[]
@@ -175,7 +212,7 @@ export async function generateStructuredOptimization(
 
   let parsedSections: { heading: string; isNew: boolean; suggestedText: string; relevanceImpact: string }[];
   try {
-    const parsed = JSON.parse(stripJsonFences(rawResponse));
+    const parsed = extractJson(rawResponse) as { sections?: typeof parsedSections };
     parsedSections = parsed.sections ?? [];
   } catch (err) {
     throw new Error(

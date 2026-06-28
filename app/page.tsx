@@ -794,32 +794,55 @@ export default function Home() {
             <section className="grid grid-cols-2 gap-3 sm:grid-cols-4">
               <ScoreCard value={scrapeResult.competitors.length} label="Competitors analyzed" accent="info" />
               <ScoreCard value={scrapeResult.target.wordCount} label="Target word count" accent="neutral" />
-              <ScoreCard value={criticalGapCount} label="Critical entity gaps" accent={criticalGapCount > 0 ? "danger" : "good"} />
+              <ScoreCard
+                value={optimizeResult ? criticalGapCount : "—"}
+                label={optimizeResult ? "Critical entity gaps" : "Entity gaps (not yet analyzed)"}
+                accent={!optimizeResult ? "neutral" : criticalGapCount > 0 ? "danger" : "good"}
+              />
               <ScoreCard value={infoGainCount} label="Info-gain signals" accent={infoGainCount > 0 ? "warning" : "good"} />
             </section>
 
-            <section className="rounded-xl border p-5" style={{ borderColor: C.border, backgroundColor: C.card }}>
+            <section
+              className="rounded-xl border p-5"
+              style={{
+                borderColor: optimizeResult ? C.border : C.green,
+                backgroundColor: C.card,
+              }}
+            >
               <div className="mb-3 flex items-center justify-between">
                 <div>
-                  <p className="text-sm font-semibold">AI Content Optimizer</p>
+                  <p className="text-sm font-semibold">
+                    {optimizeResult ? "AI Content Optimizer" : "Step 2 — AI Content Optimizer (not run yet)"}
+                  </p>
                   <p className="text-xs" style={{ color: C.muted }}>
                     Section-grounded rewrite suggestions with recomputed impact
                   </p>
                 </div>
-                <button
-                  onClick={handleOptimize}
-                  disabled={optimizeRunning}
-                  className="flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs font-medium disabled:opacity-50"
-                  style={{ backgroundColor: C.border, color: C.text }}
-                >
-                  {optimizeRunning ? "Running..." : optimizeResult ? "↻ Regenerate" : "Run gap analysis"}
-                </button>
+                {optimizeResult && !optimizeRunning && (
+                  <button
+                    onClick={handleOptimize}
+                    className="flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs font-medium"
+                    style={{ backgroundColor: C.border, color: C.text }}
+                  >
+                    ↻ Regenerate
+                  </button>
+                )}
                 {optimizeRunning && (
-                  <button onClick={handleStopOptimize} className="ml-2 text-xs" style={{ color: C.red }}>
+                  <button onClick={handleStopOptimize} className="text-xs" style={{ color: C.red }}>
                     Stop
                   </button>
                 )}
               </div>
+
+              {!optimizeResult && !optimizeRunning && (
+                <button
+                  onClick={handleOptimize}
+                  className="mb-3 w-full rounded-lg py-2.5 text-sm font-semibold"
+                  style={{ backgroundColor: C.green, color: C.bg }}
+                >
+                  Run gap analysis + rewrite suggestions →
+                </button>
+              )}
 
               <div className="rounded-lg p-4" style={{ backgroundColor: C.bg }}>
                 <p className="text-sm" style={{ color: "#c9cedb" }}>{optimizerInsight}</p>
@@ -1032,7 +1055,11 @@ export default function Home() {
                   <ScoreCard value={scrapeResult.topKeywords.length} label="Keywords tracked" accent="info" />
                   <ScoreCard value={scrapeResult.target.entityCount} label="Your entities" accent="neutral" />
                   <ScoreCard value={scrapeResult.target.informationGain.length} label="Unique signals" accent="good" />
-                  <ScoreCard value={criticalGapCount} label="Entity gaps" accent={criticalGapCount > 0 ? "danger" : "good"} />
+                  <ScoreCard
+                    value={optimizeResult ? criticalGapCount : "—"}
+                    label={optimizeResult ? "Entity gaps" : "Entity gaps (run Step 2)"}
+                    accent={!optimizeResult ? "neutral" : criticalGapCount > 0 ? "danger" : "good"}
+                  />
                 </div>
               </section>
             )}

@@ -170,7 +170,7 @@ export async function POST(req: NextRequest) {
             wordCount: target.wordCount,
             fetchError: target.fetchError,
             headingOutline: extractHeadingOutline(target.text),
-            entities: cleanTargetEntities.slice(0, 30),
+            entities: cleanTargetEntities,
             entityCount: cleanTargetEntities.length,
             rawText: target.text,
             informationGain: targetInfoGain,
@@ -192,7 +192,7 @@ export async function POST(req: NextRequest) {
               wordCount: c.wordCount,
               fetchError: c.fetchError,
               headingOutline: extractHeadingOutline(c.text),
-              entities: entities.slice(0, 30),
+              entities: entities,
               entityCount: entities.length,
               rawText: c.text,
               // infoGainResults[0] is the target; competitors start at index 1.
