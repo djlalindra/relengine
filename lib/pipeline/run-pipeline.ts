@@ -6,6 +6,15 @@ function getFetchserpApiKey(): string | undefined {
   return process.env.FETCHSERP_API_KEY;
 }
 
+/** Throws if the given signal has already been aborted -- used between
+ * pipeline steps so a stopped request halts promptly instead of running
+ * through several more (costly) model calls before noticing. */
+function throwIfAborted(signal?: AbortSignal) {
+  if (signal?.aborted) {
+    throw new DOMException("Aborted by user.", "AbortError");
+  }
+}
+
 /**
  * Fetches basic page content (title + text snippet) for a list of manually-
  * supplied URLs. Uses fetchSERP's no-JS scraping endpoint if a key is
@@ -259,13 +268,15 @@ async function fetchGrounding(
 async function planOutline(
   topic: string,
   onProgress: ProgressCallback,
-  groundingContext: string
+  groundingContext: string,
+  signal?: AbortSignal
 ): Promise<{ outline: string; retries: number }> {
   let outline = "";
   let retries = 0;
   let feedback = "";
 
   for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
+    throwIfAborted(signal);
     onProgress(
       attempt === 0
         ? "Drafting outline..."
@@ -286,8 +297,9 @@ async function planOutline(
       },
     ];
 
-    outline = await callModel(messages, { temperature: 0.6 });
+    outline = await callModel(messages, { temperature: 0.6, signal });
 
+    throwIfAborted(signal);
     onProgress("Checking outline quality...");
     const validatorMessages: ChatMessage[] = [
       { role: "system", content: OUTLINE_VALIDATOR_SYSTEM },
@@ -295,6 +307,7 @@ async function planOutline(
     ];
     const validatorResponse = await callModel(validatorMessages, {
       temperature: 0,
+      signal,
     });
     const { ok, missing } = parseValidatorResponse(validatorResponse);
 
@@ -316,13 +329,15 @@ async function writeDraft(
   topic: string,
   outline: string,
   onProgress: ProgressCallback,
-  groundingContext: string
+  groundingContext: string,
+  signal?: AbortSignal
 ): Promise<{ draft: string; retries: number }> {
   let draft = "";
   let retries = 0;
   let feedback = "";
 
   for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
+    throwIfAborted(signal);
     onProgress(
       attempt === 0
         ? "Writing draft..."
@@ -343,8 +358,9 @@ async function writeDraft(
       },
     ];
 
-    draft = await callModel(messages, { temperature: 0.7, maxTokens: 4000 });
+    draft = await callModel(messages, { temperature: 0.7, maxTokens: 4000, signal });
 
+    throwIfAborted(signal);
     onProgress("Checking draft quality...");
     const validatorMessages: ChatMessage[] = [
       { role: "system", content: DRAFT_VALIDATOR_SYSTEM },
@@ -352,6 +368,7 @@ async function writeDraft(
     ];
     const validatorResponse = await callModel(validatorMessages, {
       temperature: 0,
+      signal,
     });
     const { ok, missing } = parseValidatorResponse(validatorResponse);
 
@@ -369,8 +386,10 @@ async function writeDraft(
 async function generateAltTitlesAndFaq(
   topic: string,
   draft: string,
-  onProgress: ProgressCallback
+  onProgress: ProgressCallback,
+  signal?: AbortSignal
 ): Promise<{ altTitles: string[]; faqSuggestions: string[] }> {
+  throwIfAborted(signal);
   onProgress("Generating alternate titles and FAQ suggestions...");
 
   const messages: ChatMessage[] = [
@@ -392,7 +411,7 @@ FAQS:
     { role: "user", content: `Topic: ${topic}\n\nArticle:\n${draft}` },
   ];
 
-  const response = await callModel(messages, { temperature: 0.8 });
+  const response = await callModel(messages, { temperature: 0.8, signal });
 
   const titlesBlock = response.match(/TITLES:\s*([\s\S]*?)FAQS:/i);
   const faqsBlock = response.match(/FAQS:\s*([\s\S]*)/i);
@@ -417,29 +436,38 @@ FAQS:
 export async function runPipeline(
   topic: string,
   onProgress: ProgressCallback = () => {},
-  manualUrls: string[] = []
+  manualUrls: string[] = [],
+  signal?: AbortSignal
 ): Promise<PipelineResult> {
+  throwIfAborted(signal);
   const grounding = await fetchGrounding(topic, onProgress, manualUrls);
 
+  throwIfAborted(signal);
   const { outline, retries: outlineRetries } = await planOutline(
     topic,
     onProgress,
-    grounding.context
+    grounding.context,
+    signal
   );
 
+  throwIfAborted(signal);
   const { draft, retries: draftRetries } = await writeDraft(
     topic,
     outline,
     onProgress,
-    grounding.context
+    grounding.context,
+    signal
   );
 
+  throwIfAborted(signal);
   const { altTitles, faqSuggestions } = await generateAltTitlesAndFaq(
     topic,
     draft,
-    onProgress
+    onProgress,
+    signal
   );
 
+  throwIfAborted(signal);
   onProgress("Running structural checks...");
   const structuralReport = runStructuralChecks(draft);
 

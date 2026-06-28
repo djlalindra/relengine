@@ -24,7 +24,12 @@ const DEFAULT_MODEL = "nvidia/nemotron-3-super-120b-a12b:free";
  */
 export async function callModel(
   messages: ChatMessage[],
-  options: { model?: string; temperature?: number; maxTokens?: number } = {}
+  options: {
+    model?: string;
+    temperature?: number;
+    maxTokens?: number;
+    signal?: AbortSignal;
+  } = {}
 ): Promise<string> {
   const apiKey = process.env.OPENROUTER_API_KEY;
   if (!apiKey) {
@@ -47,6 +52,7 @@ export async function callModel(
       temperature: options.temperature ?? 0.7,
       max_tokens: options.maxTokens ?? 4000,
     }),
+    signal: options.signal,
   });
 
   if (!response.ok) {

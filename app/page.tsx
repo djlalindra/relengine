@@ -115,6 +115,12 @@ export default function Home() {
     router.refresh();
   }
 
+  function handleStop() {
+    abortRef.current?.abort();
+    setRunning(false);
+    setSteps((prev) => [...prev, "Stopped by user."]);
+  }
+
   async function handleCopy() {
     if (!result) return;
     await navigator.clipboard.writeText(result.draft);
@@ -164,6 +170,15 @@ export default function Home() {
             >
               {running ? "Generating..." : "Generate"}
             </button>
+            {running && (
+              <button
+                type="button"
+                onClick={handleStop}
+                className="rounded-md border border-[#3a1f1f] bg-[#1a1212] px-4 py-2 text-sm font-medium text-[#ff6b6b] transition hover:bg-[#241515]"
+              >
+                Stop
+              </button>
+            )}
           </div>
 
           <button

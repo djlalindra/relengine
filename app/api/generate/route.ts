@@ -70,24 +70,48 @@ export async function POST(req: NextRequest) {
   const stream = new ReadableStream({
     async start(controller) {
       const encoder = new TextEncoder();
+      let closed = false;
 
-      const onProgress = (step: string) => {
-        controller.enqueue(encoder.encode(sse({ type: "progress", step })));
+      const safeEnqueue = (chunk: string) => {
+        if (closed) return;
+        try {
+          controller.enqueue(encoder.encode(chunk));
+        } catch {
+          // Controller already closed/aborted client-side -- ignore.
+        }
       };
 
+      const onProgress = (step: string) => {
+        safeEnqueue(sse({ type: "progress", step }));
+      };
+
+      // If the client disconnects (e.g. the Stop button calls
+      // AbortController.abort()), req.signal fires "abort". We pass this
+      // signal into the pipeline so in-progress model calls and the retry
+      // loop stop checking/calling further, instead of continuing to burn
+      // API credits after the user has already given up on the response.
+      req.signal.addEventListener("abort", () => {
+        closed = true;
+      });
+
       try {
-        const result = await runPipeline(topic, onProgress, manualUrls);
-        controller.enqueue(
-          encoder.encode(sse({ type: "result", result }))
-        );
+        const result = await runPipeline(topic, onProgress, manualUrls, req.signal);
+        safeEnqueue(sse({ type: "result", result }));
       } catch (err) {
+        if (req.signal.aborted) {
+          // Expected -- the user clicked Stop. Nothing to report as an error.
+          return;
+        }
         const message =
           err instanceof Error ? err.message : "Unknown error occurred.";
-        controller.enqueue(
-          encoder.encode(sse({ type: "error", error: message }))
-        );
+        safeEnqueue(sse({ type: "error", error: message }));
       } finally {
-        controller.close();
+        closed = true;
+        try {
+          controller.close();
+        } catch {
+          // Already closed -- fine.
+        }
       }
     },
   });
