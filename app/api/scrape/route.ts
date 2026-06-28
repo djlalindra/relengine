@@ -88,7 +88,14 @@ export async function POST(req: NextRequest) {
           await extractEntitiesForPages(target, competitors);
 
         onProgress("Building top keyword summary...");
-        const topKeywords = buildTopKeywords(competitorEntityLists, targetEntities);
+        const { keywords: topKeywords, textIntegrityWarning } = buildTopKeywords(
+          competitorEntityLists,
+          targetEntities,
+          target.text,
+          target.wordCount
+        );
+
+        const allErrors = textIntegrityWarning ? [...errors, textIntegrityWarning] : errors;
 
         const result = {
           target: {
@@ -98,20 +105,25 @@ export async function POST(req: NextRequest) {
             fetchError: target.fetchError,
             headingOutline: extractHeadingOutline(target.text),
             entities: targetEntities.slice(0, 30),
+            entityCount: targetEntities.length,
+            rawText: target.text,
           },
           competitors: competitors.map((c) => {
             const entityList = competitorEntityLists.find((e) => e.url === c.url);
+            const entities = entityList?.entities ?? [];
             return {
               url: c.url,
               title: c.title,
               wordCount: c.wordCount,
               fetchError: c.fetchError,
               headingOutline: extractHeadingOutline(c.text),
-              entities: (entityList?.entities ?? []).slice(0, 30),
+              entities: entities.slice(0, 30),
+              entityCount: entities.length,
+              rawText: c.text,
             };
           }),
           topKeywords,
-          errors,
+          errors: allErrors,
           // Pass the raw page content + entity data through so Step 2
           // (Optimize) can reuse it without re-fetching or re-extracting.
           _cache: {

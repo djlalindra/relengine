@@ -18,6 +18,8 @@ type PageSummary = {
   fetchError?: string;
   headingOutline: HeadingItem[];
   entities: EntitySummary[];
+  entityCount: number;
+  rawText: string;
 };
 
 type TopKeyword = {
@@ -155,12 +157,22 @@ function WarningsBox({ warnings }: { warnings: string[] }) {
 }
 
 function PageDetail({ page }: { page: PageSummary }) {
+  const [showRawText, setShowRawText] = useState(false);
+
   return (
     <div className="space-y-4">
       {page.fetchError ? (
         <p className="text-sm text-[#ff6b6b]">Failed: {page.fetchError}</p>
       ) : (
         <>
+          <div className="flex gap-4">
+            <p className="text-xs text-[#888]">
+              <span className="text-[#d8d8d8]">{page.wordCount}</span> words
+            </p>
+            <p className="text-xs text-[#888]">
+              <span className="text-[#d8d8d8]">{page.entityCount}</span> entities identified
+            </p>
+          </div>
           <div>
             <p className="mb-1.5 text-xs font-medium uppercase tracking-wide text-[#999]">
               Headings
@@ -183,7 +195,7 @@ function PageDetail({ page }: { page: PageSummary }) {
           </div>
           <div>
             <p className="mb-1.5 text-xs font-medium uppercase tracking-wide text-[#999]">
-              Top entities ({page.entities.length})
+              Top entities (showing {Math.min(20, page.entities.length)} of {page.entityCount})
             </p>
             <div className="flex flex-wrap gap-1.5">
               {page.entities.slice(0, 20).map((e, i) => (
@@ -196,6 +208,20 @@ function PageDetail({ page }: { page: PageSummary }) {
                 </span>
               ))}
             </div>
+          </div>
+          <div>
+            <button
+              type="button"
+              onClick={() => setShowRawText((v) => !v)}
+              className="text-xs text-[#888] hover:text-[#e8e8e8] underline"
+            >
+              {showRawText ? "Hide" : "Show"} raw extracted text (verify header/footer exclusion)
+            </button>
+            {showRawText && (
+              <pre className="mt-2 max-h-64 overflow-y-auto whitespace-pre-wrap rounded-md border border-[#1f1f1f] bg-[#0d0d0d] p-3 text-xs text-[#999]">
+                {page.rawText || "(no text extracted)"}
+              </pre>
+            )}
           </div>
         </>
       )}

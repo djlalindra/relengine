@@ -1,6 +1,7 @@
 import { extractEntities, ExtractedEntity } from "./entity-extractor";
 import { computeSemanticCoverage, SemanticCoverageResult } from "./embeddings-client";
 import { PageContent } from "./content-extractor";
+import { buildPresenceChecker } from "./presence-checker";
 
 /**
  * Extracts entities for the target page and a set of competitor pages in
@@ -82,9 +83,11 @@ export type TopKeyword = {
 export function buildTopKeywords(
   competitorEntityLists: { url: string; entities: ExtractedEntity[] }[],
   targetEntities: ExtractedEntity[],
+  targetText: string = "",
+  targetWordCount: number | undefined = undefined,
   limit: number = 25
-): TopKeyword[] {
-  const targetNames = new Set(targetEntities.map((e) => e.name.toLowerCase()));
+): { keywords: TopKeyword[]; textIntegrityWarning: string | null } {
+  const checker = buildPresenceChecker(targetEntities, targetText, targetWordCount);
 
   const aggregation = new Map<
     string,
@@ -109,13 +112,13 @@ export function buildTopKeywords(
     }
   }
 
-  return Array.from(aggregation.values())
+  const keywords = Array.from(aggregation.values())
     .map((e) => ({
       term: e.term,
       type: e.type,
       appearsInCompetitors: e.count,
       avgSalience: e.salienceSum / e.count,
-      presentInTarget: targetNames.has(e.term.toLowerCase()),
+      presentInTarget: checker.isPresent(e.term),
     }))
     .sort((a, b) => {
       if (b.appearsInCompetitors !== a.appearsInCompetitors) {
@@ -124,6 +127,8 @@ export function buildTopKeywords(
       return b.avgSalience - a.avgSalience;
     })
     .slice(0, limit);
+
+  return { keywords, textIntegrityWarning: checker.textIntegrityWarning };
 }
 
 /**
@@ -173,9 +178,10 @@ export async function buildGapReport(
     errors.push(...extracted.errors);
   }
 
-  const targetEntityNames = new Set(
-    targetEntities.map((e) => e.name.toLowerCase())
-  );
+  const checker = buildPresenceChecker(targetEntities, target.text, target.wordCount);
+  if (checker.textIntegrityWarning) {
+    errors.push(checker.textIntegrityWarning);
+  }
 
   // Aggregate competitor entities not present in target
   const entityAggregation = new Map<
@@ -186,7 +192,7 @@ export async function buildGapReport(
   for (const { entities } of competitorEntityLists) {
     for (const entity of entities) {
       const key = entity.name.toLowerCase();
-      if (targetEntityNames.has(key)) continue; // already covered by target
+      if (checker.isPresent(entity.name)) continue; // already covered by target
 
       const existing = entityAggregation.get(key);
       if (existing) {

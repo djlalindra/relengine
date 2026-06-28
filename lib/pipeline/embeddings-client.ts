@@ -43,10 +43,72 @@ function getRegion(): string {
   return process.env.GCP_REGION || "us-central1";
 }
 
+// Common generic marketing/mission-statement language -- words that
+// appear heavily in vague "we care about you" copy with no concrete,
+// checkable content. A passage dominated by these, with zero concrete
+// signals (numbers, named entities, specific claims), is more likely
+// filler than a real informational gap worth surfacing.
+const FLUFF_WORDS = new Set([
+  "confidence", "peace", "mind", "ambitions", "hope", "supportive",
+  "compassionate", "dedicated", "empower", "empowered", "empowering",
+  "journey", "strength", "renewed", "passionate", "committed",
+  "advocate", "advocates", "advocating", "caring", "care", "heartfelt",
+  "wholeheartedly", "tirelessly", "relentlessly", "unwavering",
+  "exceptional", "outstanding", "world-class", "best-in-class",
+  "cutting-edge", "innovative", "trusted", "proven", "premier",
+  "beautiful", "safe", "heard", "navigate", "emotional", "needs",
+  "difficult", "feel", "felt", "reclaim", "facets", "comprehensive",
+]);
+
+/**
+ * Heuristic check for generic marketing/mission-statement filler --
+ * passages heavy on emotive, non-specific language with zero concrete,
+ * checkable content (no numbers, no named entities/proper nouns beyond
+ * sentence-start capitalization). Not perfect, but catches the clearest
+ * cases (e.g. "They empower clients to pursue their best interests and
+ * ambitions with confidence and peace of mind") without needing a full
+ * NLP classifier.
+ */
+export function isLikelyFluff(text: string): boolean {
+  const words = text.split(/\s+/).filter(Boolean);
+  if (words.length === 0) return false;
+
+  const fluffCount = words.filter((w) =>
+    FLUFF_WORDS.has(w.toLowerCase().replace(/[.,!?;:]+$/, ""))
+  ).length;
+  const fluffRatio = fluffCount / words.length;
+
+  const hasNumber = /\d/.test(text);
+  // Proper-noun-like tokens: capitalized words NOT at the start of a
+  // sentence (a crude but workable signal for named entities/specifics).
+  // Require at least 2 distinct such tokens -- a single capitalized word
+  // mid-sentence is often just the page's own firm name repeated in
+  // boilerplate copy ("At Acme Law, you're not just a case number"),
+  // which shouldn't by itself count as a concrete, checkable fact.
+  const sentences = text.split(/(?<=[.!?])\s+/);
+  const properNounTokens = new Set<string>();
+  for (const sentence of sentences) {
+    const sentenceWords = sentence.split(/\s+/).filter(Boolean);
+    for (let i = 1; i < sentenceWords.length; i++) {
+      if (/^[A-Z][a-z]+/.test(sentenceWords[i])) {
+        properNounTokens.add(sentenceWords[i]);
+      }
+    }
+  }
+
+  const hasConcreteSignal = hasNumber || properNounTokens.size >= 2;
+
+  // Flag as fluff if marketing-language density is meaningfully high AND
+  // there's nothing concrete anchoring the passage to a checkable fact.
+  return fluffRatio >= 0.045 && !hasConcreteSignal;
+}
+
 /**
  * Splits text into paragraph-level chunks for passage-level comparison.
  * Filters out very short fragments (likely nav remnants, single labels)
- * that would otherwise dilute the similarity signal.
+ * that would otherwise dilute the similarity signal, and filters out
+ * generic marketing/mission-statement filler that isn't a real
+ * informational gap worth surfacing even if it's semantically distinct.
  */
 export function chunkText(text: string, minWords: number = 15): string[] {
   const paragraphs = text
@@ -55,7 +117,8 @@ export function chunkText(text: string, minWords: number = 15): string[] {
     .filter((p) => p.length > 0);
 
   return paragraphs.filter(
-    (p) => p.split(/\s+/).filter(Boolean).length >= minWords
+    (p) =>
+      p.split(/\s+/).filter(Boolean).length >= minWords && !isLikelyFluff(p)
   );
 }
 
