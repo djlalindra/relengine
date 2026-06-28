@@ -20,6 +20,7 @@ type PageSummary = {
   entities: EntitySummary[];
   entityCount: number;
   rawText: string;
+  informationGain: { term: string; count: number }[];
 };
 
 type TopKeyword = {
@@ -208,6 +209,28 @@ function PageDetail({ page }: { page: PageSummary }) {
                 </span>
               ))}
             </div>
+          </div>
+          <div>
+            <p className="mb-1.5 text-xs font-medium uppercase tracking-wide text-[#999]">
+              Information gain — unique to this page only
+            </p>
+            {page.informationGain.length === 0 ? (
+              <p className="text-xs text-[#666]">
+                Nothing found that&apos;s unique to this page vs. the rest of the set.
+              </p>
+            ) : (
+              <div className="flex flex-wrap gap-1.5">
+                {page.informationGain.map((g, i) => (
+                  <span
+                    key={i}
+                    className="rounded bg-[#1a2a1f] px-2 py-0.5 text-xs text-[#8fd99f]"
+                    title={`mentioned ${g.count}x, found on no other page in this set`}
+                  >
+                    {g.term}
+                  </span>
+                ))}
+              </div>
+            )}
           </div>
           <div>
             <button
@@ -567,7 +590,7 @@ export default function Home() {
               <div className="space-y-2">
                 <AccordionRow
                   title={scrapeResult.target.title}
-                  subtitle={scrapeResult.target.url}
+                  subtitle={`${scrapeResult.target.url} · ${scrapeResult.target.wordCount} words · ${scrapeResult.target.entityCount} entities`}
                   badge={
                     <span className="rounded bg-[#1f3a2a] px-2 py-0.5 text-xs text-[#6bcf6b]">
                       Your page
@@ -579,7 +602,11 @@ export default function Home() {
                 </AccordionRow>
 
                 {scrapeResult.competitors.map((c, i) => (
-                  <AccordionRow key={i} title={c.title} subtitle={`${c.url} · ${c.wordCount} words`}>
+                  <AccordionRow
+                    key={i}
+                    title={c.title}
+                    subtitle={`${c.url} · ${c.wordCount} words · ${c.entityCount} entities`}
+                  >
                     <PageDetail page={c} />
                   </AccordionRow>
                 ))}

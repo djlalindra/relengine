@@ -3,6 +3,32 @@ import { computeSemanticCoverage, SemanticCoverageResult } from "./embeddings-cl
 import { PageContent } from "./content-extractor";
 import { buildPresenceChecker } from "./presence-checker";
 
+// Generic, context-independent terms Cloud NLP occasionally mis-extracts
+// as standalone entities (e.g. picking up "More" from a "Learn More"
+// button label, or "One" from a numbered list). These carry zero
+// topical/service-specific meaning regardless of context, so they're
+// filtered universally rather than case-by-case.
+const JUNK_ENTITY_TERMS = new Set([
+  "more", "most", "many", "few", "several", "various", "other", "others", "another",
+  "one", "ones", "some", "someone", "something", "anyone", "anything", "everyone", "everything",
+  "this", "that", "these", "those", "it", "its",
+  "words", "word", "way", "ways", "side", "sides", "behalf", "thing", "things", "stuff",
+  "part", "parts", "lot", "lots", "bit", "bits",
+  "here", "there", "now", "today", "later",
+]);
+
+// Entity types that are essentially never useful as a standalone "missing
+// entity" suggestion: a bare number ("55", "416", "4242") or a
+// competitor's actual phone number tell you nothing actionable -- you
+// can't "add" a competitor's phone number to your own page, and a
+// disembodied digit fragment isn't a real concept to incorporate.
+const JUNK_ENTITY_TYPES = new Set(["NUMBER", "PHONE_NUMBER"]);
+
+export function isJunkEntity(name: string, type: string): boolean {
+  if (JUNK_ENTITY_TYPES.has(type)) return true;
+  return JUNK_ENTITY_TERMS.has(name.toLowerCase().trim());
+}
+
 /**
  * Extracts entities for the target page and a set of competitor pages in
  * one pass. Used by the Scrape & Summarize stage so entity data can be
@@ -96,6 +122,7 @@ export function buildTopKeywords(
 
   for (const { entities } of competitorEntityLists) {
     for (const entity of entities) {
+      if (isJunkEntity(entity.name, entity.type)) continue;
       const key = entity.name.toLowerCase();
       const existing = aggregation.get(key);
       if (existing) {
@@ -191,6 +218,7 @@ export async function buildGapReport(
 
   for (const { entities } of competitorEntityLists) {
     for (const entity of entities) {
+      if (isJunkEntity(entity.name, entity.type)) continue;
       const key = entity.name.toLowerCase();
       if (checker.isPresent(entity.name)) continue; // already covered by target
 

@@ -4,7 +4,8 @@ import {
   fetchMultiplePages,
   extractHeadingOutline,
 } from "@/lib/pipeline/content-extractor";
-import { extractEntitiesForPages, buildTopKeywords } from "@/lib/pipeline/gap-report";
+import { extractEntitiesForPages, buildTopKeywords, isJunkEntity } from "@/lib/pipeline/gap-report";
+import { computeInformationGain } from "@/lib/pipeline/information-gain";
 
 const MAX_URLS = 15;
 
@@ -97,6 +98,15 @@ export async function POST(req: NextRequest) {
 
         const allErrors = textIntegrityWarning ? [...errors, textIntegrityWarning] : errors;
 
+        const cleanTargetEntities = targetEntities.filter(
+          (e) => !isJunkEntity(e.name, e.type)
+        );
+
+        onProgress("Computing information gain (unique content per page)...");
+        const allPageTexts = [target.text, ...competitors.map((c) => c.text)];
+        const infoGainResults = computeInformationGain(allPageTexts);
+        const targetInfoGain = infoGainResults[0]?.uniqueTerms ?? [];
+
         const result = {
           target: {
             url: target.url,
@@ -104,13 +114,16 @@ export async function POST(req: NextRequest) {
             wordCount: target.wordCount,
             fetchError: target.fetchError,
             headingOutline: extractHeadingOutline(target.text),
-            entities: targetEntities.slice(0, 30),
-            entityCount: targetEntities.length,
+            entities: cleanTargetEntities.slice(0, 30),
+            entityCount: cleanTargetEntities.length,
             rawText: target.text,
+            informationGain: targetInfoGain,
           },
-          competitors: competitors.map((c) => {
+          competitors: competitors.map((c, idx) => {
             const entityList = competitorEntityLists.find((e) => e.url === c.url);
-            const entities = entityList?.entities ?? [];
+            const entities = (entityList?.entities ?? []).filter(
+              (e) => !isJunkEntity(e.name, e.type)
+            );
             return {
               url: c.url,
               title: c.title,
@@ -120,6 +133,8 @@ export async function POST(req: NextRequest) {
               entities: entities.slice(0, 30),
               entityCount: entities.length,
               rawText: c.text,
+              // infoGainResults[0] is the target; competitors start at index 1.
+              informationGain: infoGainResults[idx + 1]?.uniqueTerms ?? [],
             };
           }),
           topKeywords,
