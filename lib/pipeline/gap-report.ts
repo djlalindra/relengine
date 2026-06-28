@@ -259,7 +259,9 @@ export async function buildGapReport(
     targetChunks: [],
     coverageScore: 0,
     uncoveredPassages: [],
+    partialMatchCount: 0,
     strongMatchThreshold: 0.75,
+    realGapThreshold: 0.5,
   };
 
   if (target.text && validCompetitors.length > 0) {

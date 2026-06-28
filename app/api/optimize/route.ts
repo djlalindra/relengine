@@ -2,7 +2,7 @@ import { NextRequest } from "next/server";
 import { PageContent } from "@/lib/pipeline/content-extractor";
 import { ExtractedEntity } from "@/lib/pipeline/entity-extractor";
 import { buildGapReport } from "@/lib/pipeline/gap-report";
-import { generateRewriteSuggestionsForReport } from "@/lib/pipeline/run-pipeline";
+import { generateStructuredOptimization } from "@/lib/pipeline/structured-optimizer";
 
 function sse(data: object): string {
   return `data: ${JSON.stringify(data)}\n\n`;
@@ -58,15 +58,15 @@ export async function POST(req: NextRequest) {
           }
         );
 
-        onProgress("Generating rewrite suggestions from the gap report...");
-        const rewriteSuggestions = await generateRewriteSuggestionsForReport(
+        const optimization = await generateStructuredOptimization(
           cache.target,
+          cache.competitors,
           gapReport,
           onProgress,
           controller.signal
         );
 
-        const result = { gapReport, rewriteSuggestions };
+        const result = { gapReport, optimization };
 
         streamController.enqueue(encoder.encode(sse({ type: "result", result })));
       } catch (err) {
@@ -87,3 +87,4 @@ export async function POST(req: NextRequest) {
     },
   });
 }
+

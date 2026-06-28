@@ -60,6 +60,36 @@ const FLUFF_WORDS = new Set([
   "difficult", "feel", "felt", "reclaim", "facets", "comprehensive",
 ]);
 
+// Third-party review/testimonial widget content (e.g. Trustindex, Google
+// Reviews embeds) and direct customer quotes -- real text, but not an
+// informational gap worth "adding" to your own page; it's someone else's
+// specific case/review, not a transferable concept.
+const TESTIMONIAL_PATTERNS = [
+  /trustindex verifies/i,
+  /verified (?:by )?google/i,
+  /\bdear (?:mr|mrs|ms|dr)\.?\s+[a-z]/i, // direct-address letter/testimonial opener
+  /\b(?:5|four|five) out of (?:5|four|five) stars/i,
+  /★{2,}/, // repeated star characters
+  /"\s*[-—]\s*[A-Z][a-z]+ [A-Z]\./, // quote attribution like "..." - John D.
+];
+
+// Lead-generation / call-to-action boilerplate -- form prompts, download
+// offers, "click here" patterns. Real body content, but a UI/conversion
+// element, not informational content worth treating as a "gap."
+const CTA_PATTERNS = [
+  /fill out the form/i,
+  /download (?:this|our|the) (?:free )?(?:guide|ebook|checklist|report)/i,
+  /schedule (?:a|your) (?:free )?consultation/i,
+  /\bclick here\b/i,
+  /call (?:us )?(?:now|today) (?:at|for)/i,
+  /sign up (?:now|today|for)/i,
+  /subscribe to (?:our|the) newsletter/i,
+];
+
+function matchesAnyPattern(text: string, patterns: RegExp[]): boolean {
+  return patterns.some((p) => p.test(text));
+}
+
 /**
  * Heuristic check for generic marketing/mission-statement filler --
  * passages heavy on emotive, non-specific language with zero concrete,
@@ -67,9 +97,14 @@ const FLUFF_WORDS = new Set([
  * sentence-start capitalization). Not perfect, but catches the clearest
  * cases (e.g. "They empower clients to pursue their best interests and
  * ambitions with confidence and peace of mind") without needing a full
- * NLP classifier.
+ * NLP classifier. Also catches third-party review-widget content and
+ * lead-gen CTA boilerplate via explicit pattern matching, since those
+ * are identifiable by structure/phrasing rather than word-ratio alone.
  */
 export function isLikelyFluff(text: string): boolean {
+  if (matchesAnyPattern(text, TESTIMONIAL_PATTERNS)) return true;
+  if (matchesAnyPattern(text, CTA_PATTERNS)) return true;
+
   const words = text.split(/\s+/).filter(Boolean);
   if (words.length === 0) return false;
 
@@ -226,8 +261,10 @@ export type PassageMatch = {
 export type SemanticCoverageResult = {
   targetChunks: string[];
   coverageScore: number; // 0-100, % of competitor chunks with a strong match in target
-  uncoveredPassages: PassageMatch[]; // competitor passages with weak/no match in target
+  uncoveredPassages: PassageMatch[]; // competitor passages with a GENUINE gap (below realGapThreshold)
+  partialMatchCount: number; // passages that aren't a strong match but aren't a real gap either
   strongMatchThreshold: number;
+  realGapThreshold: number;
 };
 
 /**
@@ -236,11 +273,20 @@ export type SemanticCoverageResult = {
  * best-matching paragraph in the target page (by embedding cosine
  * similarity) and flags passages where the target has no strong semantic
  * equivalent -- i.e. topical/semantic gaps.
+ *
+ * Uses two thresholds, not one: strongMatchThreshold (0.75) determines the
+ * coverage percentage, but only passages scoring below realGapThreshold
+ * (0.5) are surfaced as "uncovered" gaps worth showing. Without this
+ * floor, a passage scoring 0.74 (borderline, likely a real but loosely-
+ * worded match) gets lumped in the same "uncovered" list as one scoring
+ * 0.10 (genuinely unrelated) -- the list was previously a ceiling with no
+ * floor, so weak-but-real matches crowded out genuinely missing content.
  */
 export async function computeSemanticCoverage(
   targetText: string,
   competitorPages: { url: string; text: string }[],
-  strongMatchThreshold: number = 0.75
+  strongMatchThreshold: number = 0.75,
+  realGapThreshold: number = 0.5
 ): Promise<SemanticCoverageResult> {
   const targetChunks = chunkText(targetText);
 
@@ -256,7 +302,9 @@ export async function computeSemanticCoverage(
       targetChunks,
       coverageScore: 0,
       uncoveredPassages: [],
+      partialMatchCount: 0,
       strongMatchThreshold,
+      realGapThreshold,
     };
   }
 
@@ -267,6 +315,7 @@ export async function computeSemanticCoverage(
 
   const uncoveredPassages: PassageMatch[] = [];
   let strongMatchCount = 0;
+  let partialMatchCount = 0;
 
   for (let i = 0; i < competitorChunks.length; i++) {
     const compEmbedding = competitorEmbeddings[i];
@@ -279,12 +328,18 @@ export async function computeSemanticCoverage(
 
     if (bestScore >= strongMatchThreshold) {
       strongMatchCount++;
-    } else {
+    } else if (bestScore < realGapThreshold) {
       uncoveredPassages.push({
         competitorChunk: competitorChunks[i].text,
         competitorUrl: competitorChunks[i].url,
         bestMatchScore: bestScore,
       });
+    } else {
+      // Between realGapThreshold and strongMatchThreshold: a loose or
+      // partial match. Not strong enough to count toward coverage, but
+      // not weak enough to call a genuine gap either -- excluded from
+      // both buckets rather than forced into one.
+      partialMatchCount++;
     }
   }
 
@@ -300,6 +355,8 @@ export async function computeSemanticCoverage(
     targetChunks,
     coverageScore,
     uncoveredPassages,
+    partialMatchCount,
     strongMatchThreshold,
+    realGapThreshold,
   };
 }

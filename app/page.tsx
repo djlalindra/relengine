@@ -6,7 +6,7 @@ import { AccordionRow } from "@/components/AccordionRow";
 import { CircularGauge } from "@/components/CircularGauge";
 import { CoverageBarChart } from "@/components/CoverageBarChart";
 import { ScoreCard } from "@/components/ScoreCard";
-import { downloadCsv } from "@/lib/csv-export";
+import { downloadXlsx } from "@/lib/xlsx-export";
 
 type EntitySummary = { name: string; type: string; salience: number };
 type HeadingItem = { level: number; text: string };
@@ -57,14 +57,37 @@ type GapReport = {
   semanticCoverage: {
     coverageScore: number;
     uncoveredPassages: PassageMatch[];
+    partialMatchCount: number;
     strongMatchThreshold: number;
+    realGapThreshold: number;
   };
   errors: string[];
 };
 
+type SectionOptimization = {
+  heading: string;
+  isNew: boolean;
+  currentText: string;
+  suggestedText: string;
+  entitiesAssigned: string[];
+  citabilityBefore: number;
+  citabilityAfter: number;
+  relevanceImpact: string;
+};
+
+type StructuredOptimizationResult = {
+  sections: SectionOptimization[];
+  overallCurrentScore: number;
+  overallProjectedScore: number | null;
+  projectedScoreUnavailableReason?: string;
+  sectionsFound: number;
+  usedFallbackAssignment: boolean;
+  fallbackReason?: string;
+};
+
 type OptimizeResult = {
   gapReport: GapReport;
-  rewriteSuggestions: string;
+  optimization: StructuredOptimizationResult;
 };
 
 type StructuralFinding = { rule: string; passed: boolean; detail: string };
@@ -389,50 +412,146 @@ export default function Home() {
 
   async function handleCopy() {
     if (!optimizeResult) return;
-    await navigator.clipboard.writeText(optimizeResult.rewriteSuggestions);
+    const text = optimizeResult.optimization.sections
+      .map(
+        (s) =>
+          `## ${s.heading}${s.isNew ? " (new section)" : ""}\n\n${s.suggestedText}\n\nImpact: ${s.relevanceImpact}`
+      )
+      .join("\n\n---\n\n");
+    await navigator.clipboard.writeText(text);
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
   }
 
-  function handleExportCsv() {
+  function handleExportXlsx() {
     if (!scrapeResult) return;
 
-    const rows: (string | number)[][] = [
-      ["Type", "URL", "Word Count", "Term", "Term Type", "Salience/Score", "In Target"],
+    const sheets: { name: string; rows: (string | number)[][] }[] = [];
+
+    // Sheet 1: Page-by-page overview
+    const pageRows: (string | number)[][] = [
+      ["URL", "Role", "Word Count", "Entity Count"],
+      [scrapeResult.target.url, "Target", scrapeResult.target.wordCount, scrapeResult.target.entityCount],
+      ...scrapeResult.competitors.map((c) => [
+        c.url,
+        "Competitor",
+        c.wordCount,
+        c.entityCount,
+      ] as (string | number)[]),
     ];
+    sheets.push({ name: "Pages Overview", rows: pageRows });
 
-    rows.push(["Target", scrapeResult.target.url, scrapeResult.target.wordCount, "", "", "", ""]);
-    for (const e of scrapeResult.target.entities) {
-      rows.push(["Target Entity", scrapeResult.target.url, "", e.name, e.type, e.salience.toFixed(3), "yes"]);
-    }
-
-    for (const c of scrapeResult.competitors) {
-      rows.push(["Competitor", c.url, c.wordCount, "", "", "", ""]);
-      for (const e of c.entities) {
-        rows.push(["Competitor Entity", c.url, "", e.name, e.type, e.salience.toFixed(3), ""]);
-      }
-    }
-
-    for (const k of scrapeResult.topKeywords) {
-      rows.push([
-        "Top Keyword",
-        "",
-        "",
+    // Sheet 2: Top semantic keywords
+    const keywordRows: (string | number)[][] = [
+      ["Term", "Type", "Competitors Mentioning", "Avg Salience", "In Target"],
+      ...scrapeResult.topKeywords.map((k) => [
         k.term,
         k.type,
+        k.appearsInCompetitors,
         k.avgSalience.toFixed(3),
-        k.presentInTarget ? "yes" : "no",
-      ]);
+        k.presentInTarget ? "Yes" : "No",
+      ] as (string | number)[]),
+    ];
+    sheets.push({ name: "Top Keywords", rows: keywordRows });
+
+    // Sheet 3: Per-page entities
+    const entityRows: (string | number)[][] = [["Page URL", "Role", "Entity", "Type", "Salience"]];
+    entityRows.push(
+      ...scrapeResult.target.entities.map(
+        (e) => [scrapeResult.target.url, "Target", e.name, e.type, e.salience.toFixed(3)] as (string | number)[]
+      )
+    );
+    for (const c of scrapeResult.competitors) {
+      entityRows.push(
+        ...c.entities.map(
+          (e) => [c.url, "Competitor", e.name, e.type, e.salience.toFixed(3)] as (string | number)[]
+        )
+      );
     }
+    sheets.push({ name: "Entities by Page", rows: entityRows });
+
+    // Sheet 4: Information gain
+    const infoGainRows: (string | number)[][] = [["Page URL", "Role", "Unique Term", "Mentions"]];
+    infoGainRows.push(
+      ...scrapeResult.target.informationGain.map(
+        (g) => [scrapeResult.target.url, "Target", g.term, g.count] as (string | number)[]
+      )
+    );
+    for (const c of scrapeResult.competitors) {
+      infoGainRows.push(
+        ...c.informationGain.map((g) => [c.url, "Competitor", g.term, g.count] as (string | number)[])
+      );
+    }
+    sheets.push({ name: "Information Gain", rows: infoGainRows });
 
     if (optimizeResult) {
-      for (const e of optimizeResult.gapReport.missingEntities) {
-        rows.push(["Missing Entity", "", "", e.name, e.type, e.avgSalienceInCompetitors.toFixed(3), "no"]);
-      }
+      // Sheet 5: Missing entities
+      const missingRows: (string | number)[][] = [
+        ["Entity", "Type", "Competitors Mentioning", "Avg Salience"],
+        ...optimizeResult.gapReport.missingEntities.map(
+          (e) => [e.name, e.type, e.appearsInCompetitors, e.avgSalienceInCompetitors.toFixed(3)] as (
+            | string
+            | number
+          )[]
+        ),
+      ];
+      sheets.push({ name: "Missing Entities", rows: missingRows });
+
+      // Sheet 6: Uncovered passages
+      const passageRows: (string | number)[][] = [
+        ["Competitor URL", "Match Score", "Passage"],
+        ...optimizeResult.gapReport.semanticCoverage.uncoveredPassages.map(
+          (p) => [p.competitorUrl, p.bestMatchScore.toFixed(3), p.competitorChunk] as (string | number)[]
+        ),
+      ];
+      sheets.push({ name: "Uncovered Passages", rows: passageRows });
+
+      // Sheet 7: Section-by-section optimization (the real deliverable)
+      const optRows: (string | number)[][] = [
+        [
+          "Section",
+          "New Section?",
+          "Citability Before",
+          "Citability After",
+          "Entities Assigned",
+          "Current Text",
+          "Suggested Text",
+          "Relevance Impact",
+        ],
+        ...optimizeResult.optimization.sections.map(
+          (s) =>
+            [
+              s.heading,
+              s.isNew ? "Yes" : "No",
+              s.citabilityBefore,
+              s.citabilityAfter,
+              s.entitiesAssigned.join(", "),
+              s.currentText,
+              s.suggestedText,
+              s.relevanceImpact,
+            ] as (string | number)[]
+        ),
+      ];
+      optRows.push([]);
+      optRows.push([
+        "Overall semantic coverage",
+        "",
+        optimizeResult.optimization.overallCurrentScore,
+        optimizeResult.optimization.overallProjectedScore ?? "N/A",
+        "",
+        "",
+        "",
+        "",
+      ]);
+      sheets.push({ name: "Optimization Plan", rows: optRows });
     }
 
-    downloadCsv(`audit-${scrapeResult.target.url.replace(/[^a-z0-9]/gi, "-")}.csv`, rows);
+    downloadXlsx(
+      `relevance-audit-${scrapeResult.target.url.replace(/[^a-z0-9]/gi, "-")}.xlsx`,
+      sheets
+    );
   }
+
 
   const criticalGapCount = optimizeResult?.gapReport.missingEntities.length ?? 0;
   const infoGainCount = scrapeResult?.topKeywords.filter((k) => !k.presentInTarget).length ?? 0;
@@ -541,10 +660,10 @@ export default function Home() {
                 <p className="text-xs text-[#666]">{scrapeResult.target.url}</p>
               </div>
               <button
-                onClick={handleExportCsv}
+                onClick={handleExportXlsx}
                 className="rounded-md border border-[#2a2a2a] bg-[#161616] px-3 py-1.5 text-xs text-[#aaa] hover:bg-[#1f1f1f]"
               >
-                Export CSV
+                Export Excel (multi-tab)
               </button>
             </div>
 
@@ -692,7 +811,13 @@ export default function Home() {
 
                 <div>
                   <p className="mb-2 text-xs font-medium uppercase tracking-wide text-[#999]">
-                    Uncovered passages
+                    Uncovered passages — genuine gaps only (score &lt; {optimizeResult.gapReport.semanticCoverage.realGapThreshold})
+                  </p>
+                  <p className="mb-2 text-xs text-[#666]">
+                    {optimizeResult.gapReport.semanticCoverage.partialMatchCount} additional passage(s) were loose/partial
+                    matches (between {optimizeResult.gapReport.semanticCoverage.realGapThreshold} and{" "}
+                    {optimizeResult.gapReport.semanticCoverage.strongMatchThreshold}) — not strong enough to count as
+                    covered, but not weak enough to call a real gap, so they're excluded from this list.
                   </p>
                   <div className="space-y-3 rounded-md border border-[#1f1f1f] bg-[#121212] p-4">
                     {optimizeResult.gapReport.semanticCoverage.uncoveredPassages.length > 0 ? (
@@ -711,17 +836,122 @@ export default function Home() {
                 </div>
 
                 <div>
+                  <p className="mb-2 text-xs font-medium uppercase tracking-wide text-[#999]">
+                    Projected impact — recomputed, not invented
+                  </p>
+                  <div className="rounded-md border border-[#1f1f1f] bg-[#121212] p-4">
+                    <div className="flex items-center gap-6">
+                      <div>
+                        <p className="text-2xl font-semibold text-[#d8d8d8]">
+                          {optimizeResult.optimization.overallCurrentScore}
+                        </p>
+                        <p className="text-xs text-[#888]">Current semantic coverage</p>
+                      </div>
+                      <span className="text-[#666]">→</span>
+                      <div>
+                        <p
+                          className={
+                            "text-2xl font-semibold " +
+                            (optimizeResult.optimization.overallProjectedScore === null
+                              ? "text-[#888]"
+                              : optimizeResult.optimization.overallProjectedScore >
+                                  optimizeResult.optimization.overallCurrentScore
+                                ? "text-[#6bcf6b]"
+                                : "text-[#d8d8d8]")
+                          }
+                        >
+                          {optimizeResult.optimization.overallProjectedScore === null
+                            ? "N/A"
+                            : optimizeResult.optimization.overallProjectedScore}
+                        </p>
+                        <p className="text-xs text-[#888]">Projected after applying suggestions</p>
+                      </div>
+                    </div>
+                    {optimizeResult.optimization.overallProjectedScore === null && (
+                      <p className="mt-3 text-xs text-[#e8c468]">
+                        Could not recompute projected score: {optimizeResult.optimization.projectedScoreUnavailableReason}.
+                        This is reported as unavailable rather than guessed.
+                      </p>
+                    )}
+                  </div>
+                </div>
+
+                <div>
                   <div className="mb-2 flex items-center justify-between">
                     <p className="text-xs font-medium uppercase tracking-wide text-[#999]">
-                      Rewrite suggestions
+                      Section-by-section optimization — grounded in {optimizeResult.optimization.sectionsFound} real section(s)
                     </p>
                     <button onClick={handleCopy} className="text-xs text-[#888] hover:text-[#e8e8e8]">
-                      {copied ? "Copied" : "Copy"}
+                      {copied ? "Copied" : "Copy all"}
                     </button>
                   </div>
-                  <pre className="overflow-x-auto whitespace-pre-wrap rounded-md border border-[#1f1f1f] bg-[#121212] p-4 text-sm leading-relaxed text-[#d8d8d8]">
-                    {optimizeResult.rewriteSuggestions}
-                  </pre>
+                  {optimizeResult.optimization.usedFallbackAssignment && (
+                    <p className="mb-2 text-xs text-[#e8c468]">
+                      Note: section assignment used a keyword-overlap fallback (Vertex embeddings
+                      were unavailable: {optimizeResult.optimization.fallbackReason}). Less
+                      semantically precise than embeddings-based assignment, but still real and
+                      deterministic.
+                    </p>
+                  )}
+
+                  {optimizeResult.optimization.sections.length === 0 ? (
+                    <p className="text-sm text-[#888]">No section-level changes needed.</p>
+                  ) : (
+                    <div className="space-y-3">
+                      {optimizeResult.optimization.sections.map((s, i) => (
+                        <div key={i} className="rounded-md border border-[#1f1f1f] bg-[#121212] p-4">
+                          <div className="mb-2 flex items-center justify-between">
+                            <p className="text-sm font-medium text-[#e8e8e8]">
+                              {s.heading}
+                              {s.isNew && (
+                                <span className="ml-2 rounded bg-[#1f3a2a] px-1.5 py-0.5 text-xs text-[#6bcf6b]">
+                                  new section
+                                </span>
+                              )}
+                            </p>
+                            <span className="text-xs text-[#888]">
+                              Citability:{" "}
+                              <span className={s.citabilityBefore >= 40 ? "text-[#6bcf6b]" : "text-[#ff6b6b]"}>
+                                {s.citabilityBefore}
+                              </span>
+                              {" → "}
+                              <span className={s.citabilityAfter >= 40 ? "text-[#6bcf6b]" : "text-[#ff6b6b]"}>
+                                {s.citabilityAfter}
+                              </span>
+                            </span>
+                          </div>
+
+                          {!s.isNew && (
+                            <div className="mb-2">
+                              <p className="mb-1 text-xs uppercase tracking-wide text-[#666]">Current</p>
+                              <p className="text-sm text-[#999]">{s.currentText.slice(0, 300)}</p>
+                            </div>
+                          )}
+
+                          <div className="mb-2">
+                            <p className="mb-1 text-xs uppercase tracking-wide text-[#666]">
+                              {s.isNew ? "Proposed new content" : "Suggested"}
+                            </p>
+                            <p className="text-sm text-[#d8d8d8]">{s.suggestedText}</p>
+                          </div>
+
+                          {s.entitiesAssigned.length > 0 && (
+                            <div className="mb-2 flex flex-wrap gap-1.5">
+                              {s.entitiesAssigned.map((e, j) => (
+                                <span key={j} className="rounded bg-[#1f1f1f] px-2 py-0.5 text-xs text-[#aaa]">
+                                  {e}
+                                </span>
+                              ))}
+                            </div>
+                          )}
+
+                          {s.relevanceImpact && (
+                            <p className="text-xs text-[#888]">{s.relevanceImpact}</p>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  )}
                 </div>
               </div>
             )}

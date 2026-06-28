@@ -1,8 +1,10 @@
 import { callModel, ChatMessage } from "./model-client";
 import { runStructuralChecks, StructuralReport } from "./structural-checks";
 import { fetchGoogleAiSerp, SerpResult } from "./fetchserp-client";
-import { fetchFullPageContent, fetchMultiplePages, PageContent } from "./content-extractor";
+import { fetchFullPageContent, fetchMultiplePages, PageContent, splitIntoSections } from "./content-extractor";
 import { buildGapReport, GapReport } from "./gap-report";
+import { assignGapsToSections } from "./section-assignment";
+import { computeCitability } from "./citability";
 
 function getFetchserpApiKey(): string | undefined {
   return process.env.FETCHSERP_API_KEY;
@@ -439,61 +441,159 @@ export type AuditPipelineResult = {
   topic: string;
   targetUrl: string;
   gapReport: GapReport;
-  rewriteSuggestions: string;
+  rewriteSuggestions: RewriteSuggestionsResult;
   structuralReport: StructuralReport;
   errors: string[];
 };
 
-const REWRITE_SUGGESTIONS_SYSTEM = `You are a senior SEO/AEO content strategist. You are given:
-1. A target page's existing content
-2. A list of entities that competitor pages mention but the target page doesn't
-3. A list of competitor passages that have no strong semantic equivalent in the target page
+export type RewriteSuggestionsResult = {
+  suggestions: string;
+  sectionsFound: number;
+  usedFallbackAssignment: boolean;
+  fallbackReason?: string;
+  sectionCitability: { heading: string; score: number; signals: string[] }[];
+};
 
-Your job: write specific, actionable rewrite suggestions for the target page. For each major gap, suggest:
-- Which section of the target page to add content to (or a new section to add)
-- What specifically should be added (referencing the missing entity or topic, in plain terms)
-- Keep suggestions concrete and tied to the actual gaps given -- do not invent generic SEO advice unrelated to the specific data provided.
+const REWRITE_SUGGESTIONS_SYSTEM = `You are a senior SEO/AEO content strategist. You are given the target page's REAL sections (already split by heading), each with:
+- A citability score (0-100) indicating whether that section currently contains any verifiable statistic, quote, or named source -- or is just generic prose with nothing an AI answer engine could cite as a specific claim
+- A list of specific missing entities/competitor passages that have been deterministically assigned to that section based on topical similarity -- not your own guess
+- Where available, real statistics or attributed claims found in the competitor passages assigned to that section
 
-Output as a markdown bulleted list, grouped by section/topic. No preamble.`;
+Research on generative engine optimization (GEO) shows that including real citations, quotations, and statistics is the single most effective lever for increasing visibility in AI-generated answers (up to a 40% boost) -- far more effective than keyword density. Sections with a LOW citability score (under 40) should be prioritized for adding a concrete, checkable claim.
+
+IMPORTANT rules on statistics:
+- If a competitor passage assigned to a section contains a real statistic, you MAY suggest the target page cite a similar verifiable figure -- but frame it as "competitors commonly cite [X]; consider sourcing and citing a similar verifiable statistic" rather than inventing a number as if it were the target page's own fact. Never present a competitor's specific number as if it belongs to the target page.
+- If no real statistic is available from the data given, suggest a placeholder like [CITE STATISTIC HERE] rather than fabricating one.
+- Only address gaps actually listed for each section. Do not invent additional gaps.
+- Keep suggestions concrete and actionable, not generic SEO advice.
+- Output as a markdown list, organized by section heading (using the real headings given), with a final "New sections needed" group at the end if applicable.
+No preamble.`;
 
 async function generateRewriteSuggestions(
   target: PageContent,
   gapReport: GapReport,
   onProgress: ProgressCallback,
   signal?: AbortSignal
-): Promise<string> {
+): Promise<RewriteSuggestionsResult> {
   throwIfAborted(signal);
   onProgress("Generating rewrite suggestions from the gap report...");
 
   if (gapReport.missingEntities.length === 0 && gapReport.semanticCoverage.uncoveredPassages.length === 0) {
-    return "No significant gaps found -- the target page's entity coverage and semantic coverage are already in line with the competitor set analyzed.";
+    return {
+      suggestions: "No significant gaps found -- the target page's entity coverage and semantic coverage are already in line with the competitor set analyzed.",
+      sectionsFound: 0,
+      usedFallbackAssignment: false,
+      sectionCitability: [],
+    };
   }
 
-  const entitySummary = gapReport.missingEntities
-    .slice(0, 20)
-    .map(
-      (e) =>
-        `- ${e.name} (${e.type}) -- mentioned in ${e.appearsInCompetitors} competitor page(s), avg salience ${e.avgSalienceInCompetitors.toFixed(2)}`
-    )
-    .join("\n");
+  onProgress("Splitting target page into real sections...");
+  const sections = splitIntoSections(target.text);
 
-  const passageSummary = gapReport.semanticCoverage.uncoveredPassages
-    .slice(0, 15)
-    .map(
-      (p) =>
-        `- From ${p.competitorUrl} (best match score in target: ${p.bestMatchScore.toFixed(2)}): "${p.competitorChunk.slice(0, 200)}${p.competitorChunk.length > 200 ? "..." : ""}"`
-    )
-    .join("\n");
+  onProgress("Assigning gaps to the section they're most related to...");
+  const assigned = await assignGapsToSections(
+    sections,
+    gapReport.missingEntities.slice(0, 25),
+    gapReport.semanticCoverage.uncoveredPassages.slice(0, 15)
+  );
+
+  if (assigned.usedFallback) {
+    onProgress(
+      `Note: embeddings-based assignment unavailable (${assigned.fallbackReason}). Used keyword-overlap fallback instead.`
+    );
+  }
+
+  // Group assigned gaps by section index for a clean per-section prompt.
+  const bySectionEntities = new Map<number, typeof assigned.entityAssignments>();
+  const bySectionPassages = new Map<number, typeof assigned.passageAssignments>();
+
+  for (const e of assigned.entityAssignments) {
+    const list = bySectionEntities.get(e.sectionIndex) ?? [];
+    list.push(e);
+    bySectionEntities.set(e.sectionIndex, list);
+  }
+  for (const p of assigned.passageAssignments) {
+    const list = bySectionPassages.get(p.sectionIndex) ?? [];
+    list.push(p);
+    bySectionPassages.set(p.sectionIndex, list);
+  }
+
+  const sectionBlocks: string[] = [];
+  sections.forEach((section, i) => {
+    const entities = bySectionEntities.get(i) ?? [];
+    const passages = bySectionPassages.get(i) ?? [];
+    if (entities.length === 0 && passages.length === 0) return; // nothing assigned here
+
+    const citability = computeCitability(section.bodyText);
+
+    const lines = [
+      `### Section: "${section.heading}"`,
+      `Current text: ${section.bodyText.slice(0, 500)}`,
+      `Citability score: ${citability.score}/100${
+        citability.score < 40 ? " -- LOW, no verifiable claim currently, prioritize adding one" : ""
+      }`,
+    ];
+    if (entities.length > 0) {
+      lines.push(
+        "Missing entities assigned here: " +
+          entities.map((e) => `${e.name} (${e.appearsInCompetitors} competitors)`).join(", ")
+      );
+    }
+    if (passages.length > 0) {
+      const statfulPassages = passages.filter((p) => computeCitability(p.competitorChunk).score >= 40);
+      lines.push(
+        "Competitor passages assigned here: " +
+          passages.map((p) => `"${p.competitorChunk.slice(0, 150)}"`).join(" | ")
+      );
+      if (statfulPassages.length > 0) {
+        lines.push(
+          "Of these, the following contain a real statistic/citation you may reference (attribute as competitor data, do not present as the target's own fact): " +
+            statfulPassages.map((p) => `"${p.competitorChunk.slice(0, 150)}"`).join(" | ")
+        );
+      }
+    }
+    sectionBlocks.push(lines.join("\n"));
+  });
+
+  const newSectionEntities = bySectionEntities.get(-1) ?? [];
+  const newSectionPassages = bySectionPassages.get(-1) ?? [];
+  const newSectionBlock =
+    newSectionEntities.length > 0 || newSectionPassages.length > 0
+      ? [
+          `### Gaps that don't fit any existing section:`,
+          newSectionEntities.length > 0
+            ? "Entities: " + newSectionEntities.map((e) => e.name).join(", ")
+            : "",
+          newSectionPassages.length > 0
+            ? "Passages: " + newSectionPassages.map((p) => `"${p.competitorChunk.slice(0, 150)}"`).join(" | ")
+            : "",
+        ]
+          .filter(Boolean)
+          .join("\n")
+      : "";
 
   const messages: ChatMessage[] = [
     { role: "system", content: REWRITE_SUGGESTIONS_SYSTEM },
     {
       role: "user",
-      content: `Target page URL: ${target.url}\n\nTarget page content (for reference):\n${target.text.slice(0, 8000)}\n\nEntities competitors mention that the target page is missing:\n${entitySummary || "(none)"}\n\nCompetitor passages with no strong semantic match in the target page:\n${passageSummary || "(none)"}\n\nProduce specific rewrite suggestions.`,
+      content: `Target page URL: ${target.url}\n\n${sectionBlocks.join("\n\n")}\n\n${newSectionBlock}\n\nProduce section-grounded rewrite suggestions.`,
     },
   ];
 
-  return await callModel(messages, { temperature: 0.5, maxTokens: 2000, signal });
+  const suggestions = await callModel(messages, { temperature: 0.5, maxTokens: 2000, signal });
+
+  const sectionCitability = sections.map((s) => {
+    const c = computeCitability(s.bodyText);
+    return { heading: s.heading, score: c.score, signals: c.signals };
+  });
+
+  return {
+    suggestions,
+    sectionsFound: sections.length,
+    usedFallbackAssignment: assigned.usedFallback,
+    fallbackReason: assigned.fallbackReason,
+    sectionCitability,
+  };
 }
 
 /**

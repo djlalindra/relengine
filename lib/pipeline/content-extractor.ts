@@ -246,3 +246,53 @@ export function extractHeadingOutline(text: string): HeadingOutlineItem[] {
 
   return outline;
 }
+
+export type PageSection = {
+  heading: string;
+  level: number;
+  bodyText: string;
+};
+
+/**
+ * Splits markdown-converted page text into real {heading, level, bodyText}
+ * blocks -- the actual sections of the page, not just a flat heading list.
+ * This is what entity-to-section placement and the structured optimization
+ * table need: a real anchor for "which section should this missing entity
+ * go in," rather than handing the whole page as one string to an LLM and
+ * letting it guess section boundaries itself.
+ *
+ * Content before the first heading (if any) is captured as a section
+ * titled "Introduction" at level 0, so nothing gets silently dropped.
+ */
+export function splitIntoSections(text: string): PageSection[] {
+  const lines = text.split("\n");
+  const sections: PageSection[] = [];
+
+  let currentHeading = "Introduction";
+  let currentLevel = 0;
+  let currentBody: string[] = [];
+
+  function flush() {
+    const body = currentBody.join("\n").trim();
+    // Don't emit an empty "Introduction" section if the page starts
+    // directly with a heading (nothing to introduce).
+    if (body || currentHeading !== "Introduction") {
+      sections.push({ heading: currentHeading, level: currentLevel, bodyText: body });
+    }
+  }
+
+  for (const line of lines) {
+    const match = line.match(/^(#{1,6})\s+(.+)/);
+    if (match) {
+      flush();
+      currentHeading = match[2].trim();
+      currentLevel = match[1].length;
+      currentBody = [];
+    } else {
+      currentBody.push(line);
+    }
+  }
+  flush();
+
+  return sections.filter((s) => s.bodyText.length > 0 || s.heading !== "Introduction");
+}

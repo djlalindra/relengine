@@ -22,6 +22,24 @@ function isValidUrl(candidate: string): boolean {
   }
 }
 
+/**
+ * Normalizes a URL for "is this the same page" comparison purposes --
+ * lowercases, strips a trailing slash, ignores query string/hash. Not a
+ * perfect equivalence check, but catches the common real cases (trailing
+ * slash differences, http vs https, case differences) that would
+ * otherwise let the target URL sneak into the competitor list undetected,
+ * causing the page to be compared against itself.
+ */
+function normalizeForComparison(url: string): string {
+  try {
+    const parsed = new URL(url);
+    const path = parsed.pathname.replace(/\/+$/, "");
+    return `${parsed.hostname.toLowerCase()}${path.toLowerCase()}`;
+  } catch {
+    return url.toLowerCase();
+  }
+}
+
 function parseUrlList(raw: string): string[] {
   const candidates = raw
     .split(/[\n,]+/)
@@ -48,10 +66,26 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  const competitorUrls = body.urls ? parseUrlList(body.urls) : [];
-  if (competitorUrls.length === 0) {
+  const rawCompetitorUrls = body.urls ? parseUrlList(body.urls) : [];
+  if (rawCompetitorUrls.length === 0) {
     return new Response(
       JSON.stringify({ error: "At least one competitor URL is required." }),
+      { status: 400 }
+    );
+  }
+
+  const targetNormalized = normalizeForComparison(targetUrl);
+  const competitorUrls = rawCompetitorUrls.filter(
+    (u) => normalizeForComparison(u) !== targetNormalized
+  );
+  const targetWasInCompetitorList = competitorUrls.length < rawCompetitorUrls.length;
+
+  if (competitorUrls.length === 0) {
+    return new Response(
+      JSON.stringify({
+        error:
+          "All supplied competitor URLs matched the target URL. Add at least one genuinely different competitor page.",
+      }),
       { status: 400 }
     );
   }
@@ -69,6 +103,12 @@ export async function POST(req: NextRequest) {
       };
 
       try {
+        if (targetWasInCompetitorList) {
+          onProgress(
+            "Warning: your target URL was also found in the competitor list and has been removed from it -- comparing a page against itself produces meaningless results."
+          );
+        }
+
         onProgress("Fetching target page content...");
         const target = await fetchFullPageContent(targetUrl);
         onProgress(
@@ -96,7 +136,15 @@ export async function POST(req: NextRequest) {
           target.wordCount
         );
 
-        const allErrors = textIntegrityWarning ? [...errors, textIntegrityWarning] : errors;
+        const allErrors = [
+          ...errors,
+          ...(textIntegrityWarning ? [textIntegrityWarning] : []),
+          ...(targetWasInCompetitorList
+            ? [
+                "Your target URL was also found in the competitor list and was excluded from it before analysis -- comparing a page against itself produces meaningless gap results.",
+              ]
+            : []),
+        ];
 
         const cleanTargetEntities = targetEntities.filter(
           (e) => !isJunkEntity(e.name, e.type)
