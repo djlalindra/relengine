@@ -164,20 +164,50 @@ async function checkAuth(req: NextRequest): Promise<boolean> {
   const match = authHeader.match(/^Bearer\s+(.+)$/i);
   if (!match) return false;
 
-  const payload = await verifyAccessToken(match[1]);
+  const token = match[1];
+
+  // Fallback: a static shared secret, for direct browser/artifact calls
+  // that don't go through the full OAuth dance (e.g. an artifact's fetch()
+  // call). Checked first since it's a cheap string comparison; OAuth
+  // tokens are JWTs and won't accidentally match a plain secret string.
+  const staticSecret = process.env.MCP_SHARED_SECRET;
+  if (staticSecret && token === staticSecret) {
+    return true;
+  }
+
+  const payload = await verifyAccessToken(token);
   return payload !== null;
+}
+
+const CORS_HEADERS = {
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+  "Access-Control-Allow-Headers": "Content-Type, Authorization",
+};
+
+function withCors(res: NextResponse): NextResponse {
+  for (const [key, value] of Object.entries(CORS_HEADERS)) {
+    res.headers.set(key, value);
+  }
+  return res;
+}
+
+export async function OPTIONS() {
+  return withCors(new NextResponse(null, { status: 204 }));
 }
 
 function unauthorizedResponse(req: NextRequest): NextResponse {
   const origin = req.nextUrl.origin;
-  return NextResponse.json(
-    { error: "unauthorized" },
-    {
-      status: 401,
-      headers: {
-        "WWW-Authenticate": `Bearer resource_metadata="${origin}/.well-known/oauth-protected-resource"`,
-      },
-    }
+  return withCors(
+    NextResponse.json(
+      { error: "unauthorized" },
+      {
+        status: 401,
+        headers: {
+          "WWW-Authenticate": `Bearer resource_metadata="${origin}/.well-known/oauth-protected-resource"`,
+        },
+      }
+    )
   );
 }
 
@@ -264,24 +294,27 @@ export async function POST(req: NextRequest) {
   try {
     body = await req.json();
   } catch {
-    return NextResponse.json(
-      jsonRpcError(null, -32700, "Parse error: invalid JSON."),
-      { status: 400 }
+    return withCors(
+      NextResponse.json(
+        jsonRpcError(null, -32700, "Parse error: invalid JSON."),
+        { status: 400 }
+      )
     );
   }
 
   try {
     const response = await handleJsonRpc(body);
     if (response === null) {
-      // Notification, no response body expected.
-      return new Response(null, { status: 202 });
+      return withCors(new NextResponse(null, { status: 202 }));
     }
-    return NextResponse.json(response);
+    return withCors(NextResponse.json(response));
   } catch (err) {
     const message = err instanceof Error ? err.message : "Unknown error.";
-    return NextResponse.json(
-      jsonRpcError(body.id ?? null, -32603, `Internal error: ${message}`),
-      { status: 500 }
+    return withCors(
+      NextResponse.json(
+        jsonRpcError(body.id ?? null, -32603, `Internal error: ${message}`),
+        { status: 500 }
+      )
     );
   }
 }
@@ -290,9 +323,11 @@ export async function GET(req: NextRequest) {
   if (!(await checkAuth(req))) {
     return unauthorizedResponse(req);
   }
-  return NextResponse.json({
-    status: "ok",
-    server: "relevance-engineering",
-    tools: tools.map((t) => t.name),
-  });
+  return withCors(
+    NextResponse.json({
+      status: "ok",
+      server: "relevance-engineering",
+      tools: tools.map((t) => t.name),
+    })
+  );
 }
