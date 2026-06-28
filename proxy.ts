@@ -3,7 +3,7 @@ import { jwtVerify } from "jose";
 
 const SESSION_COOKIE = "aeo_session";
 
-const PUBLIC_PATHS = ["/login", "/api/login"];
+const PUBLIC_PATHS = ["/login", "/api/login", "/api/mcp"];
 
 async function isAuthenticated(req: NextRequest): Promise<boolean> {
   const token = req.cookies.get(SESSION_COOKIE)?.value;
