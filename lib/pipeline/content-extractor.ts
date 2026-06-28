@@ -1,28 +1,88 @@
+import * as cheerio from "cheerio";
+import type { Element } from "domhandler";
+
 /**
  * Fetches a web page and extracts its main content, attempting to exclude
  * header, footer, and navigation elements. This is a heuristic, HTML-parsing
  * approach -- not a full headless-browser render, so JS-rendered content
  * won't appear. Good enough for most blog/article/service pages, which is
  * the primary use case here (legal services, SaaS landing pages, etc).
+ *
+ * Uses cheerio (a real DOM parser) rather than regex for tag removal and
+ * content-container selection -- regex matching of nested HTML tags is
+ * fundamentally fragile (it can't correctly handle nesting), which is what
+ * caused earlier bugs here. Regex is still used downstream only for the
+ * narrow, already-tested job of converting a small selected chunk of HTML
+ * into markdown-style headings/links.
  */
 
-const HEADER_FOOTER_TAG_PATTERNS = [
-  /<header[\s\S]*?<\/header>/gi,
-  /<footer[\s\S]*?<\/footer>/gi,
-  /<nav[\s\S]*?<\/nav>/gi,
-  /<script[\s\S]*?<\/script>/gi,
-  /<style[\s\S]*?<\/style>/gi,
-  /<noscript[\s\S]*?<\/noscript>/gi,
-  // Common class/id-based header/footer/nav wrappers that aren't semantic tags
-  /<[^>]+\b(?:class|id)\s*=\s*["'][^"']*\b(?:site-header|page-header|main-header|site-footer|page-footer|main-footer|navbar|nav-menu|main-nav|cookie-banner|cookie-consent)\b[^"']*["'][^>]*>[\s\S]*?<\/(?:div|section|aside)>/gi,
+const REMOVE_TAGS = [
+  "script", "style", "nav", "footer", "header", "aside",
+  "noscript", "form", "svg", "iframe", "button",
 ];
 
-function stripHeaderFooterNav(html: string): string {
-  let cleaned = html;
-  for (const pattern of HEADER_FOOTER_TAG_PATTERNS) {
-    cleaned = cleaned.replace(pattern, " ");
+const REMOVE_ROLES = ["navigation", "menu", "banner", "contentinfo"];
+
+// Matched as substrings of class/id names. Gated by BOILERPLATE_MAX_CHARS
+// below so a substring collision on a large legitimate content block (e.g.
+// "sidebarGrid", "related-faqs") can never delete the whole article --
+// only genuinely small chrome elements get stripped.
+const BOILERPLATE_PATTERN =
+  /(nav|navbar|menu|sidebar|side-bar|footer|header|masthead|breadcrumb|cookie|consent|subscribe|newsletter|social|share|sharing|related|recommend|comment|disqus|advert|advertis|sponsor|promo|popup|modal|banner|skip-link|skip-to|reference|references|ref-list|reflist|bibliography|citation|cite-list|footnote|author-info|byline|site-footer|site-header|global-nav|page-footer|page-header)/i;
+
+const BOILERPLATE_MAX_CHARS = 2000;
+
+/**
+ * Cleans HTML and selects the richest main-content container, mirroring
+ * the approach: remove chrome tags/roles, strip small boilerplate-looking
+ * elements (size-guarded), then pick the largest of <main>/<article>/
+ * [role=main] if it represents a meaningful share of the page -- falling
+ * back to <body> otherwise. Returns the selected container's inner HTML
+ * for downstream markdown conversion.
+ */
+function selectMainContentHtml(html: string): string {
+  const $ = cheerio.load(html);
+
+  $(REMOVE_TAGS.join(",")).remove();
+  for (const role of REMOVE_ROLES) {
+    $(`[role="${role}"]`).remove();
   }
-  return cleaned;
+
+  // Strip small boilerplate-looking elements (class or id match), guarded
+  // by size so a substring collision on a real content wrapper can't gut
+  // the page.
+  $("[class], [id]").each((_, el) => {
+    const node = $(el);
+    const cls = node.attr("class") || "";
+    const id = node.attr("id") || "";
+    if (BOILERPLATE_PATTERN.test(cls) || BOILERPLATE_PATTERN.test(id)) {
+      if (node.text().trim().length <= BOILERPLATE_MAX_CHARS) {
+        node.remove();
+      }
+    }
+  });
+
+  const hasBody = $("body").length > 0;
+  const bodyTextLen = hasBody ? $("body").text().trim().length : $.root().text().trim().length;
+
+  let bestEl: Element | null = null;
+  let bestLen = 0;
+  $("main, article, [role='main']").each((_, el) => {
+    const node = $(el);
+    const len = node.text().trim().length;
+    if (len > bestLen) {
+      bestLen = len;
+      bestEl = el;
+    }
+  });
+
+  const threshold = Math.max(400, 0.4 * bodyTextLen);
+  if (bestEl && bestLen >= threshold) {
+    return $(bestEl).prop("outerHTML") ?? "";
+  }
+  return hasBody
+    ? ($("body").prop("outerHTML") ?? "")
+    : ($.root().prop("outerHTML") ?? "");
 }
 
 function htmlToText(html: string): string {
@@ -143,8 +203,8 @@ export async function fetchFullPageContent(url: string): Promise<PageContent> {
   const titleMatch = html.match(/<title[^>]*>([^<]*)<\/title>/i);
   const title = titleMatch ? titleMatch[1].trim() : url;
 
-  const stripped = stripHeaderFooterNav(html);
-  const text = htmlToText(stripped);
+  const mainHtml = selectMainContentHtml(html);
+  const text = htmlToText(mainHtml);
   const wordCount = text.split(/\s+/).filter(Boolean).length;
 
   return { url, title, text, wordCount };
