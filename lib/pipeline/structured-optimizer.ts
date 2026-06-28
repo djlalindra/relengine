@@ -203,21 +203,42 @@ export async function generateStructuredOptimization(
   }
 
   onProgress("Generating structured per-section rewrites...");
-  const messages: ChatMessage[] = [
-    { role: "system", content: OPTIMIZER_JSON_SYSTEM },
-    { role: "user", content: `Target page: ${target.url}\n\n${promptBlocks.join("\n\n")}` },
-  ];
 
-  const rawResponse = await callModel(messages, { temperature: 0.5, maxTokens: 4000, signal });
+  let parsedSections: { heading: string; isNew: boolean; suggestedText: string; relevanceImpact: string }[] = [];
+  let lastError: string | null = null;
+  const MAX_JSON_ATTEMPTS = 3;
 
-  let parsedSections: { heading: string; isNew: boolean; suggestedText: string; relevanceImpact: string }[];
-  try {
-    const parsed = extractJson(rawResponse) as { sections?: typeof parsedSections };
-    parsedSections = parsed.sections ?? [];
-  } catch (err) {
-    throw new Error(
-      `Could not parse optimizer output as JSON: ${err instanceof Error ? err.message : "unknown error"}`
-    );
+  for (let attempt = 0; attempt < MAX_JSON_ATTEMPTS; attempt++) {
+    const messages: ChatMessage[] = [
+      { role: "system", content: OPTIMIZER_JSON_SYSTEM },
+      {
+        role: "user",
+        content: lastError
+          ? `Target page: ${target.url}\n\n${promptBlocks.join("\n\n")}\n\nYour previous response could not be parsed as valid JSON: ${lastError}\n\nReturn ONLY a corrected, complete, valid JSON object this time -- no preamble, no reasoning text, properly escape any quotes within string values.`
+          : `Target page: ${target.url}\n\n${promptBlocks.join("\n\n")}`,
+      },
+    ];
+
+    if (attempt > 0) {
+      onProgress(`Retrying JSON generation (attempt ${attempt + 1}/${MAX_JSON_ATTEMPTS}) after parse error...`);
+    }
+
+    // maxTokens raised from 3000 to 6000 -- a real possible cause of the
+    // observed mid-array JSON truncation is simply running out of tokens
+    // for pages with many assigned sections/gaps.
+    const rawResponse = await callModel(messages, { temperature: 0.4, maxTokens: 6000, signal });
+
+    try {
+      const parsed = extractJson(rawResponse) as { sections?: typeof parsedSections };
+      parsedSections = parsed.sections ?? [];
+      lastError = null;
+      break;
+    } catch (err) {
+      lastError = err instanceof Error ? err.message : "unknown error";
+      if (attempt === MAX_JSON_ATTEMPTS - 1) {
+        throw new Error(`Could not parse optimizer output as JSON after ${MAX_JSON_ATTEMPTS} attempts: ${lastError}`);
+      }
+    }
   }
 
   // Existing sections: matched back to their known metadata by exact

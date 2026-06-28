@@ -16,19 +16,11 @@ export type AssignedGaps = {
 
 const MATCH_THRESHOLD_EMBEDDING = 0.55;
 
-async function assignByEmbeddings(
-  sections: PageSection[],
-  items: { text: string }[],
-  onWait?: (message: string) => void
-): Promise<SectionAssignment[]> {
-  const sectionTexts = sections.map((s) => `${s.heading}. ${s.bodyText}`.slice(0, 2000));
-  const itemTexts = items.map((i) => i.text);
-
-  const [sectionEmbeddings, itemEmbeddings] = await Promise.all([
-    getEmbeddings(sectionTexts, onWait),
-    getEmbeddings(itemTexts, onWait),
-  ]);
-
+function matchAgainstSections(
+  itemEmbeddings: number[][],
+  sectionEmbeddings: number[][],
+  sections: PageSection[]
+): SectionAssignment[] {
   return itemEmbeddings.map((itemVec) => {
     let bestIndex = -1;
     let bestScore = 0;
@@ -54,12 +46,20 @@ async function assignByEmbeddings(
  * suggestions can say "add X to section Y" deterministically instead of
  * an LLM guessing section boundaries from a flat text blob.
  *
+ * Everything here runs SEQUENTIALLY, not concurrently, and section
+ * embeddings are computed exactly ONCE and reused for both entity and
+ * passage matching. An earlier version fired 4 concurrent embedding
+ * requests (entities-vs-sections and passages-vs-sections each making
+ * their own separate section-embedding call), which multiplies demand
+ * against an already-limited Vertex quota at exactly the moment quota
+ * pressure is highest -- the opposite of what you want when the system
+ * is already retrying through quota exhaustion. Serializing this, and
+ * halving the redundant section re-embedding, meaningfully reduces total
+ * API pressure per run.
+ *
  * No fallback to a lesser method on failure -- if Vertex embeddings fail
- * (e.g. quota exhausted), this throws and the caller surfaces a clear
- * error. getEmbeddings already retries with extended backoff (up to ~2
- * minutes) before giving up, so a genuine failure here means Vertex is
- * unavailable well beyond a normal transient blip, not that the system
- * gave up early.
+ * (e.g. quota exhausted even after retries), this throws and the caller
+ * surfaces a clear error.
  */
 export async function assignGapsToSections(
   sections: PageSection[],
@@ -87,10 +87,19 @@ export async function assignGapsToSections(
     };
   }
 
-  const [entityAssignmentsRaw, passageAssignmentsRaw] = await Promise.all([
-    assignByEmbeddings(sections, entityItems, onWait),
-    assignByEmbeddings(sections, passageItems, onWait),
-  ]);
+  const sectionTexts = sections.map((s) => `${s.heading}. ${s.bodyText}`.slice(0, 2000));
+
+  // One embedding call for sections, reused for both comparisons below --
+  // not re-embedded per comparison.
+  const sectionEmbeddings = await getEmbeddings(sectionTexts, onWait);
+
+  // Sequential, not Promise.all -- avoids stacking concurrent requests
+  // against the same quota window.
+  const entityEmbeddings = await getEmbeddings(entityItems.map((i) => i.text), onWait);
+  const entityAssignmentsRaw = matchAgainstSections(entityEmbeddings, sectionEmbeddings, sections);
+
+  const passageEmbeddings = await getEmbeddings(passageItems.map((i) => i.text), onWait);
+  const passageAssignmentsRaw = matchAgainstSections(passageEmbeddings, sectionEmbeddings, sections);
 
   return {
     entityAssignments: missingEntities.map((e, i) => ({ ...e, ...entityAssignmentsRaw[i] })),
