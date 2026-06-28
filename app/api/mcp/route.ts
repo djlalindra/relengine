@@ -149,12 +149,36 @@ const tools: ToolDef[] = [
   },
 ];
 
-function checkAuth(req: NextRequest): boolean {
-  const expected = process.env.MCP_SHARED_SECRET;
-  if (!expected) return true; // no secret configured -- open (dev only)
-  const provided =
-    req.headers.get("x-mcp-secret") || req.nextUrl.searchParams.get("secret");
-  return provided === expected;
+import { verifyAccessToken } from "@/lib/oauth";
+
+/**
+ * Validates the Bearer access token issued by our self-hosted OAuth 2.1
+ * authorization server (see /api/oauth/*). Returns 401 with a
+ * WWW-Authenticate header pointing at the protected-resource metadata
+ * endpoint when missing/invalid, per the MCP authorization spec -- this is
+ * how a client discovers where to start the OAuth flow if it tries calling
+ * the tool endpoint without a token first.
+ */
+async function checkAuth(req: NextRequest): Promise<boolean> {
+  const authHeader = req.headers.get("authorization") || "";
+  const match = authHeader.match(/^Bearer\s+(.+)$/i);
+  if (!match) return false;
+
+  const payload = await verifyAccessToken(match[1]);
+  return payload !== null;
+}
+
+function unauthorizedResponse(req: NextRequest): NextResponse {
+  const origin = req.nextUrl.origin;
+  return NextResponse.json(
+    { error: "unauthorized" },
+    {
+      status: 401,
+      headers: {
+        "WWW-Authenticate": `Bearer resource_metadata="${origin}/.well-known/oauth-protected-resource"`,
+      },
+    }
+  );
 }
 
 type JsonRpcRequest = {
@@ -232,8 +256,8 @@ async function handleJsonRpc(body: JsonRpcRequest) {
 }
 
 export async function POST(req: NextRequest) {
-  if (!checkAuth(req)) {
-    return NextResponse.json({ error: "Unauthorized." }, { status: 401 });
+  if (!(await checkAuth(req))) {
+    return unauthorizedResponse(req);
   }
 
   let body: JsonRpcRequest;
@@ -263,8 +287,8 @@ export async function POST(req: NextRequest) {
 }
 
 export async function GET(req: NextRequest) {
-  if (!checkAuth(req)) {
-    return NextResponse.json({ error: "Unauthorized." }, { status: 401 });
+  if (!(await checkAuth(req))) {
+    return unauthorizedResponse(req);
   }
   return NextResponse.json({
     status: "ok",
