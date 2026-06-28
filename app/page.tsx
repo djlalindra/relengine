@@ -2,6 +2,11 @@
 
 import { useState, useRef } from "react";
 import { useRouter } from "next/navigation";
+import { AccordionRow } from "@/components/AccordionRow";
+import { CircularGauge } from "@/components/CircularGauge";
+import { CoverageBarChart } from "@/components/CoverageBarChart";
+import { ScoreCard } from "@/components/ScoreCard";
+import { downloadCsv } from "@/lib/csv-export";
 
 type EntitySummary = { name: string; type: string; salience: number };
 type HeadingItem = { level: number; text: string };
@@ -116,54 +121,81 @@ function useSSE() {
   return { run };
 }
 
-function HeadingOutlineView({ outline }: { outline: HeadingItem[] }) {
-  if (outline.length === 0) {
-    return <p className="text-xs text-[#666]">No headings detected.</p>;
-  }
+function StepStatus({ steps, running }: { steps: string[]; running: boolean }) {
+  if (steps.length === 0) return null;
   return (
-    <div className="space-y-0.5">
-      {outline.map((h, i) => (
-        <p
-          key={i}
-          className="text-xs text-[#aaa]"
-          style={{ paddingLeft: `${(h.level - 1) * 12}px` }}
-        >
-          H{h.level} — {h.text}
+    <div className="mt-4 space-y-1.5 rounded-md border border-[#1f1f1f] bg-[#121212] p-4">
+      {steps.map((step, i) => (
+        <p key={i} className="text-xs text-[#888]">
+          {i === steps.length - 1 && running ? "→ " : "✓ "}
+          {step}
         </p>
       ))}
     </div>
   );
 }
 
-function PageCard({ page }: { page: PageSummary }) {
+function ErrorBox({ message }: { message: string }) {
   return (
-    <div className="rounded-md border border-[#1f1f1f] bg-[#121212] p-4">
-      <p className="mb-1 text-sm font-medium text-[#e8e8e8]">{page.title}</p>
-      <p className="mb-3 text-xs text-[#666]">{page.url}</p>
+    <div className="mt-4 rounded-md border border-[#3a1f1f] bg-[#1a1212] p-4">
+      <p className="text-sm text-[#ff6b6b]">{message}</p>
+    </div>
+  );
+}
+
+function WarningsBox({ warnings }: { warnings: string[] }) {
+  if (warnings.length === 0) return null;
+  return (
+    <div className="space-y-1 rounded-md border border-[#3a2f1f] bg-[#1a1712] p-4">
+      {warnings.map((w, i) => (
+        <p key={i} className="text-sm text-[#e8c468]">{w}</p>
+      ))}
+    </div>
+  );
+}
+
+function PageDetail({ page }: { page: PageSummary }) {
+  return (
+    <div className="space-y-4">
       {page.fetchError ? (
         <p className="text-sm text-[#ff6b6b]">Failed: {page.fetchError}</p>
       ) : (
         <>
-          <p className="mb-3 text-xs text-[#888]">{page.wordCount} words</p>
-          <p className="mb-1.5 text-xs font-medium uppercase tracking-wide text-[#999]">
-            Headings
-          </p>
-          <div className="mb-3">
-            <HeadingOutlineView outline={page.headingOutline} />
+          <div>
+            <p className="mb-1.5 text-xs font-medium uppercase tracking-wide text-[#999]">
+              Headings
+            </p>
+            {page.headingOutline.length === 0 ? (
+              <p className="text-xs text-[#666]">No headings detected.</p>
+            ) : (
+              <div className="space-y-0.5">
+                {page.headingOutline.map((h, i) => (
+                  <p
+                    key={i}
+                    className="text-xs text-[#aaa]"
+                    style={{ paddingLeft: `${(h.level - 1) * 12}px` }}
+                  >
+                    H{h.level} — {h.text}
+                  </p>
+                ))}
+              </div>
+            )}
           </div>
-          <p className="mb-1.5 text-xs font-medium uppercase tracking-wide text-[#999]">
-            Top entities
-          </p>
-          <div className="flex flex-wrap gap-1.5">
-            {page.entities.slice(0, 12).map((e, i) => (
-              <span
-                key={i}
-                className="rounded bg-[#1f1f1f] px-2 py-0.5 text-xs text-[#aaa]"
-                title={`${e.type} · salience ${e.salience.toFixed(2)}`}
-              >
-                {e.name}
-              </span>
-            ))}
+          <div>
+            <p className="mb-1.5 text-xs font-medium uppercase tracking-wide text-[#999]">
+              Top entities ({page.entities.length})
+            </p>
+            <div className="flex flex-wrap gap-1.5">
+              {page.entities.slice(0, 20).map((e, i) => (
+                <span
+                  key={i}
+                  className="rounded bg-[#1f1f1f] px-2 py-0.5 text-xs text-[#aaa]"
+                  title={`${e.type} · salience ${e.salience.toFixed(2)}`}
+                >
+                  {e.name}
+                </span>
+              ))}
+            </div>
           </div>
         </>
       )}
@@ -313,6 +345,57 @@ export default function Home() {
     setTimeout(() => setCopied(false), 2000);
   }
 
+  function handleExportCsv() {
+    if (!scrapeResult) return;
+
+    const rows: (string | number)[][] = [
+      ["Type", "URL", "Word Count", "Term", "Term Type", "Salience/Score", "In Target"],
+    ];
+
+    rows.push(["Target", scrapeResult.target.url, scrapeResult.target.wordCount, "", "", "", ""]);
+    for (const e of scrapeResult.target.entities) {
+      rows.push(["Target Entity", scrapeResult.target.url, "", e.name, e.type, e.salience.toFixed(3), "yes"]);
+    }
+
+    for (const c of scrapeResult.competitors) {
+      rows.push(["Competitor", c.url, c.wordCount, "", "", "", ""]);
+      for (const e of c.entities) {
+        rows.push(["Competitor Entity", c.url, "", e.name, e.type, e.salience.toFixed(3), ""]);
+      }
+    }
+
+    for (const k of scrapeResult.topKeywords) {
+      rows.push([
+        "Top Keyword",
+        "",
+        "",
+        k.term,
+        k.type,
+        k.avgSalience.toFixed(3),
+        k.presentInTarget ? "yes" : "no",
+      ]);
+    }
+
+    if (optimizeResult) {
+      for (const e of optimizeResult.gapReport.missingEntities) {
+        rows.push(["Missing Entity", "", "", e.name, e.type, e.avgSalienceInCompetitors.toFixed(3), "no"]);
+      }
+    }
+
+    downloadCsv(`audit-${scrapeResult.target.url.replace(/[^a-z0-9]/gi, "-")}.csv`, rows);
+  }
+
+  const criticalGapCount = optimizeResult?.gapReport.missingEntities.length ?? 0;
+  const infoGainCount = scrapeResult?.topKeywords.filter((k) => !k.presentInTarget).length ?? 0;
+
+  const barChartItems = scrapeResult
+    ? scrapeResult.topKeywords.map((k) => ({
+        name: k.term,
+        value: k.appearsInCompetitors,
+        covered: k.presentInTarget,
+      }))
+    : [];
+
   return (
     <div className="min-h-screen bg-[#0d0d0d] text-[#e8e8e8]">
       <header className="flex items-center justify-between border-b border-[#1f1f1f] px-6 py-4">
@@ -322,8 +405,7 @@ export default function Home() {
         </button>
       </header>
 
-      <main className="mx-auto max-w-3xl px-6 py-10 space-y-12">
-        {/* STAGE 1: SCRAPE & SUMMARIZE */}
+      <main className="mx-auto max-w-4xl px-6 py-10 space-y-10">
         <section>
           <h2 className="mb-4 text-sm font-semibold text-[#e8e8e8]">
             Step 1 — Scrape &amp; Summarize
@@ -398,84 +480,114 @@ export default function Home() {
             </div>
           </form>
 
-          {scrapeSteps.length > 0 && (
-            <div className="mt-4 space-y-1.5 rounded-md border border-[#1f1f1f] bg-[#121212] p-4">
-              {scrapeSteps.map((step, i) => (
-                <p key={i} className="text-xs text-[#888]">
-                  {i === scrapeSteps.length - 1 && scrapeRunning ? "→ " : "✓ "}
-                  {step}
-                </p>
-              ))}
-            </div>
-          )}
-
-          {scrapeError && (
-            <div className="mt-4 rounded-md border border-[#3a1f1f] bg-[#1a1212] p-4">
-              <p className="text-sm text-[#ff6b6b]">{scrapeError}</p>
-            </div>
-          )}
-
-          {scrapeResult && (
-            <div className="mt-6 space-y-6">
-              {scrapeResult.errors.length > 0 && (
-                <div className="space-y-1 rounded-md border border-[#3a2f1f] bg-[#1a1712] p-4">
-                  {scrapeResult.errors.map((e, i) => (
-                    <p key={i} className="text-sm text-[#e8c468]">{e}</p>
-                  ))}
-                </div>
-              )}
-
-              <div>
-                <h3 className="mb-2 text-xs font-medium uppercase tracking-wide text-[#999]">
-                  Target page
-                </h3>
-                <PageCard page={scrapeResult.target} />
-              </div>
-
-              <div>
-                <h3 className="mb-2 text-xs font-medium uppercase tracking-wide text-[#999]">
-                  Competitor pages ({scrapeResult.competitors.length})
-                </h3>
-                <div className="space-y-3">
-                  {scrapeResult.competitors.map((c, i) => (
-                    <PageCard key={i} page={c} />
-                  ))}
-                </div>
-              </div>
-
-              <div>
-                <h3 className="mb-2 text-xs font-medium uppercase tracking-wide text-[#999]">
-                  Top semantic keywords for this term
-                </h3>
-                <div className="rounded-md border border-[#1f1f1f] bg-[#121212] p-4">
-                  <ul className="space-y-1.5 text-sm">
-                    {scrapeResult.topKeywords.map((k, i) => (
-                      <li key={i} className="flex items-center justify-between">
-                        <span className="text-[#d8d8d8]">
-                          {k.term}{" "}
-                          <span className="text-xs text-[#666]">({k.type})</span>
-                          {k.presentInTarget && (
-                            <span className="ml-2 text-xs text-[#6bcf6b]">✓ in target</span>
-                          )}
-                        </span>
-                        <span className="text-xs text-[#888]">
-                          {k.appearsInCompetitors} competitor(s) · {k.avgSalience.toFixed(2)}
-                        </span>
-                      </li>
-                    ))}
-                  </ul>
-                </div>
-              </div>
-            </div>
-          )}
+          <StepStatus steps={scrapeSteps} running={scrapeRunning} />
+          {scrapeError && <ErrorBox message={scrapeError} />}
         </section>
 
-        {/* STAGE 2: OPTIMIZE */}
+        {scrapeResult && (
+          <section className="border-t border-[#1f1f1f] pt-8 space-y-6">
+            <div className="flex items-center justify-between">
+              <div>
+                <h2 className="text-sm font-semibold text-[#e8e8e8]">Audit results</h2>
+                <p className="text-xs text-[#666]">{scrapeResult.target.url}</p>
+              </div>
+              <button
+                onClick={handleExportCsv}
+                className="rounded-md border border-[#2a2a2a] bg-[#161616] px-3 py-1.5 text-xs text-[#aaa] hover:bg-[#1f1f1f]"
+              >
+                Export CSV
+              </button>
+            </div>
+
+            <WarningsBox warnings={scrapeResult.errors} />
+
+            <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+              <ScoreCard value={scrapeResult.competitors.length} label="Competitors analyzed" />
+              <ScoreCard value={scrapeResult.target.wordCount} label="Target word count" />
+              <ScoreCard
+                value={criticalGapCount}
+                label="Missing entities"
+                accent={criticalGapCount > 0 ? "warning" : "good"}
+              />
+              <ScoreCard value={infoGainCount} label="Keyword gaps" accent={infoGainCount > 0 ? "warning" : "good"} />
+            </div>
+
+            {optimizeResult && (
+              <div className="grid gap-4 sm:grid-cols-2">
+                <div className="flex items-center justify-center rounded-md border border-[#1f1f1f] bg-[#121212] p-6">
+                  <CircularGauge
+                    value={optimizeResult.gapReport.semanticCoverage.coverageScore}
+                    label="Semantic coverage"
+                    sublabel="vs. competitor passages"
+                  />
+                </div>
+                <div className="rounded-md border border-[#1f1f1f] bg-[#121212] p-4">
+                  <p className="mb-3 text-xs font-medium uppercase tracking-wide text-[#999]">
+                    Top keywords — competitor mentions
+                  </p>
+                  <CoverageBarChart items={barChartItems} />
+                  <p className="mt-2 text-xs text-[#666]">
+                    <span className="text-[#6bcf6b]">green</span> = present in your target page ·{" "}
+                    <span className="text-[#ff6b6b]">red</span> = missing
+                  </p>
+                </div>
+              </div>
+            )}
+
+            <div>
+              <p className="mb-2 text-xs font-medium uppercase tracking-wide text-[#999]">
+                Page-by-page analysis
+              </p>
+              <div className="space-y-2">
+                <AccordionRow
+                  title={scrapeResult.target.title}
+                  subtitle={scrapeResult.target.url}
+                  badge={
+                    <span className="rounded bg-[#1f3a2a] px-2 py-0.5 text-xs text-[#6bcf6b]">
+                      Your page
+                    </span>
+                  }
+                  defaultOpen
+                >
+                  <PageDetail page={scrapeResult.target} />
+                </AccordionRow>
+
+                {scrapeResult.competitors.map((c, i) => (
+                  <AccordionRow key={i} title={c.title} subtitle={`${c.url} · ${c.wordCount} words`}>
+                    <PageDetail page={c} />
+                  </AccordionRow>
+                ))}
+              </div>
+            </div>
+
+            <div>
+              <p className="mb-2 text-xs font-medium uppercase tracking-wide text-[#999]">
+                Top semantic keywords for this term
+              </p>
+              <div className="rounded-md border border-[#1f1f1f] bg-[#121212] p-4">
+                <ul className="space-y-1.5 text-sm">
+                  {scrapeResult.topKeywords.map((k, i) => (
+                    <li key={i} className="flex items-center justify-between">
+                      <span className="text-[#d8d8d8]">
+                        {k.term} <span className="text-xs text-[#666]">({k.type})</span>
+                        {k.presentInTarget && (
+                          <span className="ml-2 text-xs text-[#6bcf6b]">✓ in target</span>
+                        )}
+                      </span>
+                      <span className="text-xs text-[#888]">
+                        {k.appearsInCompetitors} competitor(s) · {k.avgSalience.toFixed(2)}
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            </div>
+          </section>
+        )}
+
         {scrapeResult && (
           <section className="border-t border-[#1f1f1f] pt-8">
-            <h2 className="mb-4 text-sm font-semibold text-[#e8e8e8]">
-              Step 2 — Optimize
-            </h2>
+            <h2 className="mb-4 text-sm font-semibold text-[#e8e8e8]">Step 2 — Optimize</h2>
             <div className="flex gap-2">
               <button
                 onClick={handleOptimize}
@@ -494,51 +606,17 @@ export default function Home() {
               )}
             </div>
 
-            {optimizeSteps.length > 0 && (
-              <div className="mt-4 space-y-1.5 rounded-md border border-[#1f1f1f] bg-[#121212] p-4">
-                {optimizeSteps.map((step, i) => (
-                  <p key={i} className="text-xs text-[#888]">
-                    {i === optimizeSteps.length - 1 && optimizeRunning ? "→ " : "✓ "}
-                    {step}
-                  </p>
-                ))}
-              </div>
-            )}
-
-            {optimizeError && (
-              <div className="mt-4 rounded-md border border-[#3a1f1f] bg-[#1a1212] p-4">
-                <p className="text-sm text-[#ff6b6b]">{optimizeError}</p>
-              </div>
-            )}
+            <StepStatus steps={optimizeSteps} running={optimizeRunning} />
+            {optimizeError && <ErrorBox message={optimizeError} />}
 
             {optimizeResult && (
               <div className="mt-6 space-y-6">
-                {optimizeResult.gapReport.errors.length > 0 && (
-                  <div className="space-y-1 rounded-md border border-[#3a2f1f] bg-[#1a1712] p-4">
-                    {optimizeResult.gapReport.errors.map((e, i) => (
-                      <p key={i} className="text-sm text-[#e8c468]">{e}</p>
-                    ))}
-                  </div>
-                )}
+                <WarningsBox warnings={optimizeResult.gapReport.errors} />
 
                 <div>
-                  <h3 className="mb-2 text-xs font-medium uppercase tracking-wide text-[#999]">
-                    Semantic coverage — {optimizeResult.gapReport.semanticCoverage.coverageScore}/100
-                  </h3>
-                  <div className="rounded-md border border-[#1f1f1f] bg-[#121212] p-4">
-                    <p className="text-sm text-[#d8d8d8]">
-                      {optimizeResult.gapReport.semanticCoverage.coverageScore}% of
-                      competitor passages have a strong semantic match (≥
-                      {optimizeResult.gapReport.semanticCoverage.strongMatchThreshold}) in
-                      your target page.
-                    </p>
-                  </div>
-                </div>
-
-                <div>
-                  <h3 className="mb-2 text-xs font-medium uppercase tracking-wide text-[#999]">
-                    Missing entities
-                  </h3>
+                  <p className="mb-2 text-xs font-medium uppercase tracking-wide text-[#999]">
+                    Missing entities — competitors mention these, your target page doesn&apos;t
+                  </p>
                   <div className="rounded-md border border-[#1f1f1f] bg-[#121212] p-4">
                     {optimizeResult.gapReport.missingEntities.length > 0 ? (
                       <ul className="space-y-1.5 text-sm">
@@ -560,9 +638,9 @@ export default function Home() {
                 </div>
 
                 <div>
-                  <h3 className="mb-2 text-xs font-medium uppercase tracking-wide text-[#999]">
+                  <p className="mb-2 text-xs font-medium uppercase tracking-wide text-[#999]">
                     Uncovered passages
-                  </h3>
+                  </p>
                   <div className="space-y-3 rounded-md border border-[#1f1f1f] bg-[#121212] p-4">
                     {optimizeResult.gapReport.semanticCoverage.uncoveredPassages.length > 0 ? (
                       optimizeResult.gapReport.semanticCoverage.uncoveredPassages.slice(0, 10).map((p, i) => (
@@ -581,9 +659,9 @@ export default function Home() {
 
                 <div>
                   <div className="mb-2 flex items-center justify-between">
-                    <h3 className="text-xs font-medium uppercase tracking-wide text-[#999]">
+                    <p className="text-xs font-medium uppercase tracking-wide text-[#999]">
                       Rewrite suggestions
-                    </h3>
+                    </p>
                     <button onClick={handleCopy} className="text-xs text-[#888] hover:text-[#e8e8e8]">
                       {copied ? "Copied" : "Copy"}
                     </button>
@@ -597,7 +675,6 @@ export default function Home() {
           </section>
         )}
 
-        {/* STAGE 3: STRUCTURAL CHECK */}
         {scrapeResult && (
           <section className="border-t border-[#1f1f1f] pt-8">
             <h2 className="mb-4 text-sm font-semibold text-[#e8e8e8]">
@@ -611,17 +688,13 @@ export default function Home() {
               {structuralRunning ? "Checking..." : "Run structural check"}
             </button>
 
-            {structuralError && (
-              <div className="mt-4 rounded-md border border-[#3a1f1f] bg-[#1a1212] p-4">
-                <p className="text-sm text-[#ff6b6b]">{structuralError}</p>
-              </div>
-            )}
+            {structuralError && <ErrorBox message={structuralError} />}
 
             {structuralResult && (
               <div className="mt-4">
-                <h3 className="mb-2 text-xs font-medium uppercase tracking-wide text-[#999]">
+                <p className="mb-2 text-xs font-medium uppercase tracking-wide text-[#999]">
                   Structural check — {structuralResult.score}/100
-                </h3>
+                </p>
                 <div className="space-y-2 rounded-md border border-[#1f1f1f] bg-[#121212] p-4">
                   {structuralResult.findings.map((f, i) => (
                     <div key={i} className="text-sm">

@@ -59,9 +59,27 @@ export function chunkText(text: string, minWords: number = 15): string[] {
   );
 }
 
+function isRetriableError(err: unknown): boolean {
+  const message = err instanceof Error ? err.message : String(err);
+  return (
+    message.includes("RESOURCE_EXHAUSTED") ||
+    message.includes("Quota exceeded") ||
+    message.includes("429") ||
+    message.includes("503")
+  );
+}
+
+async function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 /**
  * Calls Vertex AI's text embedding model for a batch of text chunks.
  * Returns one embedding vector per input chunk, in the same order.
+ *
+ * Retries with exponential backoff on quota/rate-limit errors (common on
+ * fresh GCP projects with low default quotas for online prediction
+ * requests), rather than failing the whole audit on a transient 429.
  */
 export async function getEmbeddings(texts: string[]): Promise<number[][]> {
   if (texts.length === 0) return [];
@@ -73,32 +91,47 @@ export async function getEmbeddings(texts: string[]): Promise<number[][]> {
 
   const url = `https://${region}-aiplatform.googleapis.com/v1/projects/${projectId}/locations/${region}/publishers/google/models/${EMBEDDING_MODEL}:predict`;
 
-  // Vertex's embedding endpoint accepts a batch of instances per call, but
-  // caps batch size (typically 250 for this model family); chunk requests
-  // defensively at 20 to stay well clear of payload-size limits given each
-  // chunk of text can be a full paragraph.
-  const BATCH_SIZE = 20;
+  // Larger batches mean fewer total requests against the per-minute quota.
+  // This model family's documented cap is around 250 instances/request;
+  // 40 stays comfortably under payload-size limits for paragraph-length
+  // chunks while meaningfully cutting request count vs. a smaller batch.
+  const BATCH_SIZE = 40;
+  const MAX_RETRIES = 4;
   const allEmbeddings: number[][] = [];
 
   for (let i = 0; i < texts.length; i += BATCH_SIZE) {
     const batch = texts.slice(i, i + BATCH_SIZE);
+    let attempt = 0;
 
-    const response = await client.request({
-      url,
-      method: "POST",
-      data: {
-        instances: batch.map((text) => ({
-          content: text,
-          task_type: EMBEDDING_DIMENSION_TASK_TYPE,
-        })),
-      },
-    });
+    while (true) {
+      try {
+        const response = await client.request({
+          url,
+          method: "POST",
+          data: {
+            instances: batch.map((text) => ({
+              content: text,
+              task_type: EMBEDDING_DIMENSION_TASK_TYPE,
+            })),
+          },
+        });
 
-    const predictions = (response.data as { predictions?: { embeddings?: { values?: number[] } }[] })
-      ?.predictions ?? [];
+        const predictions = (response.data as { predictions?: { embeddings?: { values?: number[] } }[] })
+          ?.predictions ?? [];
 
-    for (const pred of predictions) {
-      allEmbeddings.push(pred.embeddings?.values ?? []);
+        for (const pred of predictions) {
+          allEmbeddings.push(pred.embeddings?.values ?? []);
+        }
+        break;
+      } catch (err) {
+        if (isRetriableError(err) && attempt < MAX_RETRIES) {
+          const backoffMs = 1000 * Math.pow(2, attempt);
+          await sleep(backoffMs);
+          attempt++;
+          continue;
+        }
+        throw err;
+      }
     }
   }
 
