@@ -2,6 +2,48 @@ import { extractEntities, ExtractedEntity } from "./entity-extractor";
 import { computeSemanticCoverage, SemanticCoverageResult } from "./embeddings-client";
 import { PageContent } from "./content-extractor";
 
+/**
+ * Extracts entities for the target page and a set of competitor pages in
+ * one pass. Used by the Scrape & Summarize stage so entity data can be
+ * shown immediately, and reused by the Optimize stage afterward instead of
+ * re-calling Cloud NLP on the same content twice.
+ */
+export async function extractEntitiesForPages(
+  target: PageContent,
+  competitors: PageContent[]
+): Promise<{
+  targetEntities: ExtractedEntity[];
+  competitorEntityLists: { url: string; entities: ExtractedEntity[] }[];
+  errors: string[];
+}> {
+  const errors: string[] = [];
+  let targetEntities: ExtractedEntity[] = [];
+  const competitorEntityLists: { url: string; entities: ExtractedEntity[] }[] = [];
+
+  if (target.text) {
+    try {
+      targetEntities = await extractEntities(target.text);
+    } catch (err) {
+      errors.push(
+        `Entity extraction failed for target page: ${err instanceof Error ? err.message : "unknown error"}`
+      );
+    }
+  }
+
+  for (const comp of competitors.filter((c) => !c.fetchError && c.text)) {
+    try {
+      const entities = await extractEntities(comp.text);
+      competitorEntityLists.push({ url: comp.url, entities });
+    } catch (err) {
+      errors.push(
+        `Entity extraction failed for ${comp.url}: ${err instanceof Error ? err.message : "unknown error"}`
+      );
+    }
+  }
+
+  return { targetEntities, competitorEntityLists, errors };
+}
+
 export type EntityGap = {
   name: string;
   type: string;
@@ -19,19 +61,88 @@ export type GapReport = {
   errors: string[];
 };
 
+export type TopKeyword = {
+  term: string;
+  type: string;
+  appearsInCompetitors: number;
+  avgSalience: number;
+  presentInTarget: boolean;
+};
+
+/**
+ * Aggregates entities across competitor pages into a ranked "top semantic
+ * keywords" list for the search term -- the terms/concepts that show up
+ * repeatedly and prominently across what's currently published for this
+ * topic. This reuses Cloud NLP entity data already being extracted (no
+ * extra API calls) rather than inventing a separate keyword-extraction
+ * pass. Marks whether each term is already present in the target page,
+ * so this view stands alone as "what matters for this term" without
+ * requiring the full gap report to be run first.
+ */
+export function buildTopKeywords(
+  competitorEntityLists: { url: string; entities: ExtractedEntity[] }[],
+  targetEntities: ExtractedEntity[],
+  limit: number = 25
+): TopKeyword[] {
+  const targetNames = new Set(targetEntities.map((e) => e.name.toLowerCase()));
+
+  const aggregation = new Map<
+    string,
+    { term: string; type: string; count: number; salienceSum: number }
+  >();
+
+  for (const { entities } of competitorEntityLists) {
+    for (const entity of entities) {
+      const key = entity.name.toLowerCase();
+      const existing = aggregation.get(key);
+      if (existing) {
+        existing.count++;
+        existing.salienceSum += entity.salience;
+      } else {
+        aggregation.set(key, {
+          term: entity.name,
+          type: entity.type,
+          count: 1,
+          salienceSum: entity.salience,
+        });
+      }
+    }
+  }
+
+  return Array.from(aggregation.values())
+    .map((e) => ({
+      term: e.term,
+      type: e.type,
+      appearsInCompetitors: e.count,
+      avgSalience: e.salienceSum / e.count,
+      presentInTarget: targetNames.has(e.term.toLowerCase()),
+    }))
+    .sort((a, b) => {
+      if (b.appearsInCompetitors !== a.appearsInCompetitors) {
+        return b.appearsInCompetitors - a.appearsInCompetitors;
+      }
+      return b.avgSalience - a.avgSalience;
+    })
+    .slice(0, limit);
+}
+
 /**
  * Compares a target page against a set of competitor pages and produces a
  * gap report: which entities competitors mention that the target page
  * doesn't, and which semantic passages competitors cover that the target
  * page has no equivalent for.
  *
- * This is the core "audit" output -- everything else in the pipeline
- * (writer, structural checker) is secondary to this when a target URL is
- * provided.
+ * If precomputedEntities is provided (from an earlier Scrape & Summarize
+ * stage), entity extraction is skipped and that data is reused directly --
+ * avoids calling Cloud NLP twice on the same content across stages.
  */
 export async function buildGapReport(
   target: PageContent,
-  competitors: PageContent[]
+  competitors: PageContent[],
+  precomputedEntities?: {
+    targetEntities: ExtractedEntity[];
+    competitorEntityLists: { url: string; entities: ExtractedEntity[] }[];
+  }
 ): Promise<GapReport> {
   const errors: string[] = [];
 
@@ -49,26 +160,17 @@ export async function buildGapReport(
   }
 
   // --- Entity comparison ---
-  let targetEntities: ExtractedEntity[] = [];
-  const competitorEntityLists: { url: string; entities: ExtractedEntity[] }[] = [];
+  let targetEntities: ExtractedEntity[];
+  let competitorEntityLists: { url: string; entities: ExtractedEntity[] }[];
 
-  try {
-    targetEntities = await extractEntities(target.text);
-  } catch (err) {
-    errors.push(
-      `Entity extraction failed for target page: ${err instanceof Error ? err.message : "unknown error"}`
-    );
-  }
-
-  for (const comp of validCompetitors) {
-    try {
-      const entities = await extractEntities(comp.text);
-      competitorEntityLists.push({ url: comp.url, entities });
-    } catch (err) {
-      errors.push(
-        `Entity extraction failed for ${comp.url}: ${err instanceof Error ? err.message : "unknown error"}`
-      );
-    }
+  if (precomputedEntities) {
+    targetEntities = precomputedEntities.targetEntities;
+    competitorEntityLists = precomputedEntities.competitorEntityLists;
+  } else {
+    const extracted = await extractEntitiesForPages(target, validCompetitors);
+    targetEntities = extracted.targetEntities;
+    competitorEntityLists = extracted.competitorEntityLists;
+    errors.push(...extracted.errors);
   }
 
   const targetEntityNames = new Set(

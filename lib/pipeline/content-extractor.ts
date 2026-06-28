@@ -26,7 +26,32 @@ function stripHeaderFooterNav(html: string): string {
 }
 
 function htmlToText(html: string): string {
-  return html
+  let processed = html;
+
+  // Convert heading tags to markdown-style headings BEFORE stripping all
+  // tags, so heading level information survives into the plain-text output.
+  // Without this, the structural checker (which expects markdown #/##/###)
+  // sees zero headings even on pages with perfectly good heading hierarchy,
+  // because the HTML <h1>-<h6> tags get discarded along with everything else.
+  for (let level = 1; level <= 6; level++) {
+    const openTagPattern = new RegExp(`<h${level}[^>]*>`, "gi");
+    processed = processed.replace(openTagPattern, `\n\n${"#".repeat(level)} `);
+  }
+
+  // Convert anchor tags to markdown links [text](url) before stripping all
+  // tags. Without this, every real link on a fetched page is destroyed,
+  // and the structural checker's "contains a link" check always fails
+  // even on pages with substantial internal linking.
+  processed = processed.replace(
+    /<a\s+[^>]*href=["']([^"']*)["'][^>]*>([\s\S]*?)<\/a>/gi,
+    (match, href, linkText) => {
+      const cleanText = linkText.replace(/<[^>]+>/g, "").trim();
+      if (!cleanText || !href) return cleanText || "";
+      return `[${cleanText}](${href})`;
+    }
+  );
+
+  return processed
     .replace(/<br\s*\/?>/gi, "\n")
     .replace(/<\/p>/gi, "\n\n")
     .replace(/<\/div>/gi, "\n")
@@ -40,6 +65,9 @@ function htmlToText(html: string): string {
     .replace(/&quot;/g, '"')
     .replace(/&#39;/g, "'")
     .replace(/[ \t]+/g, " ")
+    // Collapse stray spaces that can appear right after the # markers due
+    // to the tag-to-space replacement pass above (e.g. "##  Heading").
+    .replace(/^(#{1,6}) +/gm, "$1 ")
     .replace(/\n{3,}/g, "\n\n")
     .trim();
 }
@@ -133,4 +161,28 @@ export async function fetchMultiplePages(urls: string[]): Promise<PageContent[]>
     results.push(await fetchFullPageContent(url));
   }
   return results;
+}
+
+export type HeadingOutlineItem = {
+  level: number;
+  text: string;
+};
+
+/**
+ * Extracts a simple heading outline (level + text) from markdown-converted
+ * page text, for the scrape/summary view -- lets the person see a page's
+ * actual heading structure without reading the full extracted text.
+ */
+export function extractHeadingOutline(text: string): HeadingOutlineItem[] {
+  const lines = text.split("\n");
+  const outline: HeadingOutlineItem[] = [];
+
+  for (const line of lines) {
+    const match = line.match(/^(#{1,6})\s+(.+)/);
+    if (match) {
+      outline.push({ level: match[1].length, text: match[2].trim() });
+    }
+  }
+
+  return outline;
 }

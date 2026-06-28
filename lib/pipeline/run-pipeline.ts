@@ -503,6 +503,8 @@ async function generateRewriteSuggestions(
  * rewrite suggestions. This is the "tell me what's missing" workflow,
  * distinct from runPipeline's "write something new from scratch" workflow.
  */
+export { generateRewriteSuggestions as generateRewriteSuggestionsForReport };
+
 export async function runAuditPipeline(
   topic: string,
   targetUrl: string,
