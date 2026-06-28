@@ -1,6 +1,8 @@
 import { callModel, ChatMessage } from "./model-client";
 import { runStructuralChecks, StructuralReport } from "./structural-checks";
 import { fetchGoogleAiSerp, SerpResult } from "./fetchserp-client";
+import { fetchFullPageContent, fetchMultiplePages, PageContent } from "./content-extractor";
+import { buildGapReport, GapReport } from "./gap-report";
 
 function getFetchserpApiKey(): string | undefined {
   return process.env.FETCHSERP_API_KEY;
@@ -431,6 +433,124 @@ FAQS:
     : [];
 
   return { altTitles, faqSuggestions };
+}
+
+export type AuditPipelineResult = {
+  topic: string;
+  targetUrl: string;
+  gapReport: GapReport;
+  rewriteSuggestions: string;
+  structuralReport: StructuralReport;
+  errors: string[];
+};
+
+const REWRITE_SUGGESTIONS_SYSTEM = `You are a senior SEO/AEO content strategist. You are given:
+1. A target page's existing content
+2. A list of entities that competitor pages mention but the target page doesn't
+3. A list of competitor passages that have no strong semantic equivalent in the target page
+
+Your job: write specific, actionable rewrite suggestions for the target page. For each major gap, suggest:
+- Which section of the target page to add content to (or a new section to add)
+- What specifically should be added (referencing the missing entity or topic, in plain terms)
+- Keep suggestions concrete and tied to the actual gaps given -- do not invent generic SEO advice unrelated to the specific data provided.
+
+Output as a markdown bulleted list, grouped by section/topic. No preamble.`;
+
+async function generateRewriteSuggestions(
+  target: PageContent,
+  gapReport: GapReport,
+  onProgress: ProgressCallback,
+  signal?: AbortSignal
+): Promise<string> {
+  throwIfAborted(signal);
+  onProgress("Generating rewrite suggestions from the gap report...");
+
+  if (gapReport.missingEntities.length === 0 && gapReport.semanticCoverage.uncoveredPassages.length === 0) {
+    return "No significant gaps found -- the target page's entity coverage and semantic coverage are already in line with the competitor set analyzed.";
+  }
+
+  const entitySummary = gapReport.missingEntities
+    .slice(0, 20)
+    .map(
+      (e) =>
+        `- ${e.name} (${e.type}) -- mentioned in ${e.appearsInCompetitors} competitor page(s), avg salience ${e.avgSalienceInCompetitors.toFixed(2)}`
+    )
+    .join("\n");
+
+  const passageSummary = gapReport.semanticCoverage.uncoveredPassages
+    .slice(0, 15)
+    .map(
+      (p) =>
+        `- From ${p.competitorUrl} (best match score in target: ${p.bestMatchScore.toFixed(2)}): "${p.competitorChunk.slice(0, 200)}${p.competitorChunk.length > 200 ? "..." : ""}"`
+    )
+    .join("\n");
+
+  const messages: ChatMessage[] = [
+    { role: "system", content: REWRITE_SUGGESTIONS_SYSTEM },
+    {
+      role: "user",
+      content: `Target page URL: ${target.url}\n\nTarget page content (for reference):\n${target.text.slice(0, 8000)}\n\nEntities competitors mention that the target page is missing:\n${entitySummary || "(none)"}\n\nCompetitor passages with no strong semantic match in the target page:\n${passageSummary || "(none)"}\n\nProduce specific rewrite suggestions.`,
+    },
+  ];
+
+  return await callModel(messages, { temperature: 0.5, maxTokens: 2000, signal });
+}
+
+/**
+ * The primary audit pipeline: requires a target URL. Fetches the target
+ * page and all competitor pages in full, extracts entities, computes
+ * passage-level semantic coverage, and produces a gap report plus concrete
+ * rewrite suggestions. This is the "tell me what's missing" workflow,
+ * distinct from runPipeline's "write something new from scratch" workflow.
+ */
+export async function runAuditPipeline(
+  topic: string,
+  targetUrl: string,
+  competitorUrls: string[],
+  onProgress: ProgressCallback = () => {},
+  signal?: AbortSignal
+): Promise<AuditPipelineResult> {
+  throwIfAborted(signal);
+  onProgress("Fetching target page content...");
+  const target = await fetchFullPageContent(targetUrl);
+
+  if (target.fetchError) {
+    onProgress(`Warning: target page fetch failed (${target.fetchError}).`);
+  } else {
+    onProgress(`Fetched target page (${target.wordCount} words).`);
+  }
+
+  throwIfAborted(signal);
+  onProgress(`Fetching ${competitorUrls.length} competitor page(s)...`);
+  const competitors = await fetchMultiplePages(competitorUrls);
+  const successCount = competitors.filter((c) => !c.fetchError).length;
+  onProgress(`Fetched ${successCount}/${competitorUrls.length} competitor page(s) successfully.`);
+
+  throwIfAborted(signal);
+  onProgress("Extracting entities (Cloud Natural Language)...");
+  onProgress("Computing semantic passage coverage (Vertex Embeddings)...");
+  const gapReport = await buildGapReport(target, competitors);
+
+  throwIfAborted(signal);
+  const rewriteSuggestions = await generateRewriteSuggestions(
+    target,
+    gapReport,
+    onProgress,
+    signal
+  );
+
+  throwIfAborted(signal);
+  onProgress("Running structural checks on target page...");
+  const structuralReport = runStructuralChecks(target.text);
+
+  return {
+    topic,
+    targetUrl,
+    gapReport,
+    rewriteSuggestions,
+    structuralReport,
+    errors: gapReport.errors,
+  };
 }
 
 export async function runPipeline(

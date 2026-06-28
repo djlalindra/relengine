@@ -3,44 +3,70 @@
 import { useState, useRef } from "react";
 import { useRouter } from "next/navigation";
 
-type StructuralFinding = {
-  rule: string;
-  passed: boolean;
-  detail: string;
+type EntityGap = {
+  name: string;
+  type: string;
+  appearsInCompetitors: number;
+  avgSalienceInCompetitors: number;
 };
 
-type PipelineResult = {
-  topic: string;
-  outline: string;
-  draft: string;
-  structuralReport: { findings: StructuralFinding[]; score: number };
-  outlineRetries: number;
-  draftRetries: number;
-  altTitles: string[];
-  faqSuggestions: string[];
-  grounding: {
-    used: boolean;
-    sourcesSeen: { title: string; url: string }[];
-    error?: string;
-    source: "manual" | "api" | "none";
+type ExtractedEntity = {
+  name: string;
+  type: string;
+  salience: number;
+};
+
+type PassageMatch = {
+  competitorChunk: string;
+  competitorUrl: string;
+  bestMatchScore: number;
+};
+
+type GapReport = {
+  targetUrl: string;
+  targetWordCount: number;
+  missingEntities: EntityGap[];
+  targetEntities: ExtractedEntity[];
+  semanticCoverage: {
+    coverageScore: number;
+    uncoveredPassages: PassageMatch[];
+    strongMatchThreshold: number;
   };
+  competitorsAnalyzed: { url: string; wordCount: number; fetchError?: string }[];
+  errors: string[];
+};
+
+type StructuralFinding = { rule: string; passed: boolean; detail: string };
+
+type AuditResult = {
+  topic: string;
+  targetUrl: string;
+  gapReport: GapReport;
+  rewriteSuggestions: string;
+  structuralReport: { findings: StructuralFinding[]; score: number };
+  errors: string[];
 };
 
 export default function Home() {
   const router = useRouter();
   const [topic, setTopic] = useState("");
+  const [targetUrl, setTargetUrl] = useState("");
   const [urls, setUrls] = useState("");
-  const [showUrlInput, setShowUrlInput] = useState(false);
   const [running, setRunning] = useState(false);
   const [steps, setSteps] = useState<string[]>([]);
-  const [result, setResult] = useState<PipelineResult | null>(null);
+  const [result, setResult] = useState<AuditResult | null>(null);
   const [error, setError] = useState("");
   const [copied, setCopied] = useState(false);
   const abortRef = useRef<AbortController | null>(null);
 
+  const urlCount = urls
+    .split(/[\n,]+/)
+    .map((s) => s.trim())
+    .filter(Boolean).length;
+
   async function handleGenerate(e: React.FormEvent) {
     e.preventDefault();
-    if (!topic.trim() || running) return;
+    if (!topic.trim() || !targetUrl.trim() || running) return;
 
     setRunning(true);
     setSteps([]);
@@ -57,6 +83,7 @@ export default function Home() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           topic: topic.trim(),
+          targetUrl: targetUrl.trim(),
           urls: urls.trim() || undefined,
         }),
         signal: controller.signal,
@@ -109,29 +136,24 @@ export default function Home() {
     }
   }
 
-  async function handleLogout() {
-    await fetch("/api/logout", { method: "POST" });
-    router.push("/login");
-    router.refresh();
-  }
-
   function handleStop() {
     abortRef.current?.abort();
     setRunning(false);
     setSteps((prev) => [...prev, "Stopped by user."]);
   }
 
+  async function handleLogout() {
+    await fetch("/api/logout", { method: "POST" });
+    router.push("/login");
+    router.refresh();
+  }
+
   async function handleCopy() {
     if (!result) return;
-    await navigator.clipboard.writeText(result.draft);
+    await navigator.clipboard.writeText(result.rewriteSuggestions);
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
   }
-
-  const urlCount = urls
-    .split(/[\n,]+/)
-    .map((s) => s.trim())
-    .filter(Boolean).length;
 
   return (
     <div className="min-h-screen bg-[#0d0d0d] text-[#e8e8e8]">
@@ -148,27 +170,66 @@ export default function Home() {
       </header>
 
       <main className="mx-auto max-w-3xl px-6 py-10">
-        <form onSubmit={handleGenerate} className="mb-8">
-          <label htmlFor="topic" className="mb-2 block text-xs text-[#999]">
-            Service or topic to write about
-          </label>
-          <div className="flex gap-2">
+        <form onSubmit={handleGenerate} className="mb-8 space-y-4">
+          <div>
+            <label htmlFor="topic" className="mb-1.5 block text-xs text-[#999]">
+              Topic / keyword
+            </label>
             <input
               id="topic"
               type="text"
               value={topic}
               onChange={(e) => setTopic(e.target.value)}
-              placeholder="e.g. technical SEO audits for SaaS companies"
+              placeholder="e.g. car accident lawyer toronto"
               maxLength={200}
               disabled={running}
-              className="flex-1 rounded-md border border-[#2a2a2a] bg-[#161616] px-3 py-2 text-sm outline-none focus:border-[#555] focus:ring-1 focus:ring-[#555] disabled:opacity-50"
+              className="w-full rounded-md border border-[#2a2a2a] bg-[#161616] px-3 py-2 text-sm outline-none focus:border-[#555] focus:ring-1 focus:ring-[#555] disabled:opacity-50"
             />
+          </div>
+
+          <div>
+            <label htmlFor="targetUrl" className="mb-1.5 block text-xs text-[#999]">
+              Target URL (required) — the page you want audited
+            </label>
+            <input
+              id="targetUrl"
+              type="text"
+              value={targetUrl}
+              onChange={(e) => setTargetUrl(e.target.value)}
+              placeholder="https://yoursite.com/your-page"
+              disabled={running}
+              className="w-full rounded-md border border-[#2a2a2a] bg-[#161616] px-3 py-2 text-sm outline-none focus:border-[#555] focus:ring-1 focus:ring-[#555] disabled:opacity-50"
+            />
+          </div>
+
+          <div>
+            <label htmlFor="urls" className="mb-1.5 block text-xs text-[#999]">
+              Competitor URLs (required, at least 1) — one per line or
+              comma-separated
+            </label>
+            <textarea
+              id="urls"
+              value={urls}
+              onChange={(e) => setUrls(e.target.value)}
+              placeholder={"https://competitor1.com/page\nhttps://competitor2.com/page"}
+              rows={5}
+              disabled={running}
+              className="w-full resize-y rounded-md border border-[#2a2a2a] bg-[#161616] px-3 py-2 text-sm font-mono outline-none focus:border-[#555] focus:ring-1 focus:ring-[#555] disabled:opacity-50"
+            />
+            <p className="mt-1 text-xs text-[#666]">
+              {urlCount > 0
+                ? `${urlCount} URL${urlCount === 1 ? "" : "s"} detected (max 15 used).`
+                : "No competitor URLs entered yet."}
+            </p>
+          </div>
+
+          <div className="flex gap-2">
             <button
               type="submit"
-              disabled={running || !topic.trim()}
+              disabled={running || !topic.trim() || !targetUrl.trim() || urlCount === 0}
               className="rounded-md bg-[#e8e8e8] px-4 py-2 text-sm font-medium text-[#0d0d0d] transition hover:bg-white disabled:opacity-50"
             >
-              {running ? "Generating..." : "Generate"}
+              {running ? "Analyzing..." : "Run audit"}
             </button>
             {running && (
               <button
@@ -180,38 +241,6 @@ export default function Home() {
               </button>
             )}
           </div>
-
-          <button
-            type="button"
-            onClick={() => setShowUrlInput((v) => !v)}
-            className="mt-3 text-xs text-[#888] hover:text-[#e8e8e8]"
-          >
-            {showUrlInput ? "− Hide" : "+ Add"} real SERP URLs (optional)
-          </button>
-
-          {showUrlInput && (
-            <div className="mt-2">
-              <label htmlFor="urls" className="mb-1.5 block text-xs text-[#999]">
-                Paste Google SERP URLs — one per line, or comma-separated
-                (e.g. from a CSV export). These will be fetched and used to
-                ground the content instead of an automatic search.
-              </label>
-              <textarea
-                id="urls"
-                value={urls}
-                onChange={(e) => setUrls(e.target.value)}
-                placeholder={"https://example.com/page-one\nhttps://example.com/page-two\nhttps://example.com/page-three"}
-                rows={5}
-                disabled={running}
-                className="w-full resize-y rounded-md border border-[#2a2a2a] bg-[#161616] px-3 py-2 text-sm font-mono outline-none focus:border-[#555] focus:ring-1 focus:ring-[#555] disabled:opacity-50"
-              />
-              <p className="mt-1 text-xs text-[#666]">
-                {urlCount > 0
-                  ? `${urlCount} URL${urlCount === 1 ? "" : "s"} detected (max 15 used).`
-                  : "No URLs entered yet — without these, the app will try to fetch real Google AI Overview data automatically."}
-              </p>
-            </div>
-          )}
         </form>
 
         {steps.length > 0 && (
@@ -233,39 +262,83 @@ export default function Home() {
 
         {result && (
           <div className="space-y-8">
+            {result.errors.length > 0 && (
+              <section>
+                <h2 className="mb-3 text-xs font-medium uppercase tracking-wide text-[#999]">
+                  Warnings
+                </h2>
+                <div className="space-y-1 rounded-md border border-[#3a2f1f] bg-[#1a1712] p-4">
+                  {result.errors.map((e, i) => (
+                    <p key={i} className="text-sm text-[#e8c468]">
+                      {e}
+                    </p>
+                  ))}
+                </div>
+              </section>
+            )}
+
             <section>
               <h2 className="mb-3 text-xs font-medium uppercase tracking-wide text-[#999]">
-                Grounding —{" "}
-                {result.grounding.source === "manual"
-                  ? "from URLs you supplied"
-                  : result.grounding.source === "api"
-                  ? "from live Google AI data"
-                  : "none (writer used model knowledge only)"}
+                Semantic coverage — {result.gapReport.semanticCoverage.coverageScore}/100
               </h2>
               <div className="rounded-md border border-[#1f1f1f] bg-[#121212] p-4">
-                {result.grounding.sourcesSeen.length > 0 ? (
+                <p className="text-sm text-[#d8d8d8]">
+                  {result.gapReport.semanticCoverage.coverageScore}% of
+                  competitor passages have a strong semantic match (≥
+                  {result.gapReport.semanticCoverage.strongMatchThreshold}) in
+                  your target page. Target page: {result.gapReport.targetWordCount} words.
+                </p>
+              </div>
+            </section>
+
+            <section>
+              <h2 className="mb-3 text-xs font-medium uppercase tracking-wide text-[#999]">
+                Missing entities — competitors mention these, your target page doesn&apos;t
+              </h2>
+              <div className="rounded-md border border-[#1f1f1f] bg-[#121212] p-4">
+                {result.gapReport.missingEntities.length > 0 ? (
                   <ul className="space-y-1.5 text-sm">
-                    {result.grounding.sourcesSeen.map((s, i) => (
-                      <li key={i}>
-                        <a
-                          href={s.url}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="text-[#8ab4f8] hover:underline"
-                        >
-                          {s.title || s.url}
-                        </a>
-                        <span className="ml-1.5 text-xs text-[#666]">
-                          {s.url}
+                    {result.gapReport.missingEntities.map((e, i) => (
+                      <li key={i} className="flex justify-between">
+                        <span className="text-[#d8d8d8]">
+                          {e.name}{" "}
+                          <span className="text-xs text-[#666]">({e.type})</span>
+                        </span>
+                        <span className="text-xs text-[#888]">
+                          {e.appearsInCompetitors} competitor(s) · salience{" "}
+                          {e.avgSalienceInCompetitors.toFixed(2)}
                         </span>
                       </li>
                     ))}
                   </ul>
                 ) : (
                   <p className="text-sm text-[#888]">
-                    {result.grounding.error
-                      ? `Grounding failed: ${result.grounding.error}`
-                      : "No real sources were used for this generation — the writer relied on the model's own training knowledge, not live data."}
+                    No entity gaps found — your target page covers the
+                    entities competitors mention.
+                  </p>
+                )}
+              </div>
+            </section>
+
+            <section>
+              <h2 className="mb-3 text-xs font-medium uppercase tracking-wide text-[#999]">
+                Uncovered passages — competitor content with no strong match in your target page
+              </h2>
+              <div className="space-y-3 rounded-md border border-[#1f1f1f] bg-[#121212] p-4">
+                {result.gapReport.semanticCoverage.uncoveredPassages.length > 0 ? (
+                  result.gapReport.semanticCoverage.uncoveredPassages
+                    .slice(0, 10)
+                    .map((p, i) => (
+                      <div key={i} className="border-b border-[#1f1f1f] pb-3 last:border-0 last:pb-0">
+                        <p className="mb-1 text-xs text-[#666]">
+                          {p.competitorUrl} · best match score: {p.bestMatchScore.toFixed(2)}
+                        </p>
+                        <p className="text-sm text-[#d8d8d8]">{p.competitorChunk}</p>
+                      </div>
+                    ))
+                ) : (
+                  <p className="text-sm text-[#888]">
+                    No significant uncovered passages found.
                   </p>
                 )}
               </div>
@@ -274,73 +347,51 @@ export default function Home() {
             <section>
               <div className="mb-3 flex items-center justify-between">
                 <h2 className="text-xs font-medium uppercase tracking-wide text-[#999]">
-                  Generated article
+                  Rewrite suggestions
                 </h2>
                 <button
                   onClick={handleCopy}
                   className="text-xs text-[#888] hover:text-[#e8e8e8]"
                 >
-                  {copied ? "Copied" : "Copy markdown"}
+                  {copied ? "Copied" : "Copy"}
                 </button>
               </div>
               <pre className="overflow-x-auto whitespace-pre-wrap rounded-md border border-[#1f1f1f] bg-[#121212] p-4 text-sm leading-relaxed text-[#d8d8d8]">
-                {result.draft}
+                {result.rewriteSuggestions}
               </pre>
             </section>
 
             <section>
               <h2 className="mb-3 text-xs font-medium uppercase tracking-wide text-[#999]">
-                Structural check — {result.structuralReport.score}/100
+                Structural check on target page — {result.structuralReport.score}/100
               </h2>
               <div className="space-y-2 rounded-md border border-[#1f1f1f] bg-[#121212] p-4">
                 {result.structuralReport.findings.map((f, i) => (
                   <div key={i} className="text-sm">
-                    <span
-                      className={f.passed ? "text-[#6bcf6b]" : "text-[#ff6b6b]"}
-                    >
+                    <span className={f.passed ? "text-[#6bcf6b]" : "text-[#ff6b6b]"}>
                       {f.passed ? "✓" : "✗"}
                     </span>{" "}
                     <span className="text-[#d8d8d8]">{f.rule}</span>
                     {!f.passed && (
-                      <p className="ml-5 mt-0.5 text-xs text-[#888]">
-                        {f.detail}
-                      </p>
+                      <p className="ml-5 mt-0.5 text-xs text-[#888]">{f.detail}</p>
                     )}
                   </div>
                 ))}
               </div>
             </section>
 
-            {result.altTitles.length > 0 && (
-              <section>
-                <h2 className="mb-3 text-xs font-medium uppercase tracking-wide text-[#999]">
-                  Alternate titles
-                </h2>
-                <ul className="space-y-1.5 rounded-md border border-[#1f1f1f] bg-[#121212] p-4 text-sm text-[#d8d8d8]">
-                  {result.altTitles.map((t, i) => (
-                    <li key={i}>{t}</li>
-                  ))}
-                </ul>
-              </section>
-            )}
-
-            {result.faqSuggestions.length > 0 && (
-              <section>
-                <h2 className="mb-3 text-xs font-medium uppercase tracking-wide text-[#999]">
-                  Additional FAQ candidates
-                </h2>
-                <ul className="space-y-1.5 rounded-md border border-[#1f1f1f] bg-[#121212] p-4 text-sm text-[#d8d8d8]">
-                  {result.faqSuggestions.map((q, i) => (
-                    <li key={i}>{q}</li>
-                  ))}
-                </ul>
-              </section>
-            )}
-
-            <p className="text-xs text-[#666]">
-              Outline revised {result.outlineRetries}x · Draft revised{" "}
-              {result.draftRetries}x
-            </p>
+            <section>
+              <h2 className="mb-3 text-xs font-medium uppercase tracking-wide text-[#999]">
+                Competitor pages analyzed
+              </h2>
+              <ul className="space-y-1 rounded-md border border-[#1f1f1f] bg-[#121212] p-4 text-sm text-[#888]">
+                {result.gapReport.competitorsAnalyzed.map((c, i) => (
+                  <li key={i}>
+                    {c.url} — {c.fetchError ? `failed: ${c.fetchError}` : `${c.wordCount} words`}
+                  </li>
+                ))}
+              </ul>
+            </section>
           </div>
         )}
       </main>
