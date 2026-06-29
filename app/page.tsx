@@ -81,6 +81,7 @@ type SectionOptimization = {
   citabilityBefore: number;
   citabilityAfter: number;
   relevanceImpact: string;
+  rewriteFailed?: boolean;
 };
 
 type StructuredOptimizationResult = {
@@ -469,10 +470,11 @@ export default function Home() {
   async function handleCopy() {
     if (!optimizeResult) return;
     const text = optimizeResult.optimization.sections
-      .map(
-        (s) =>
-          `## ${s.heading}${s.isNew ? " (new section)" : ""}\n\n${s.suggestedText}\n\nImpact: ${s.relevanceImpact}`
-      )
+      .map((s) => {
+        const label = s.rewriteFailed ? " (NO REWRITE RETURNED -- original text shown)" : s.isNew ? " (new section)" : "";
+        const impactLine = s.rewriteFailed ? "" : `\n\nImpact: ${s.relevanceImpact}`;
+        return `## ${s.heading}${label}\n\n${s.suggestedText}${impactLine}`;
+      })
       .join("\n\n---\n\n");
     await navigator.clipboard.writeText(text);
     setCopied(true);
@@ -622,6 +624,7 @@ export default function Home() {
         [
           "Section",
           "New Section?",
+          "Rewrite Status",
           "Citability Before",
           "Citability After",
           "Entities Assigned",
@@ -634,6 +637,7 @@ export default function Home() {
             [
               s.heading,
               s.isNew ? "Yes" : "No",
+              s.rewriteFailed ? "FAILED -- no rewrite returned, original text shown" : "OK",
               s.citabilityBefore,
               s.citabilityAfter,
               s.entitiesAssigned.join(", "),
@@ -646,6 +650,7 @@ export default function Home() {
       optRows.push([]);
       optRows.push([
         "Overall semantic coverage",
+        "",
         "",
         optimizeResult.optimization.overallCurrentScore,
         optimizeResult.optimization.overallProjectedScore ?? "N/A",
@@ -1048,12 +1053,21 @@ export default function Home() {
                           </div>
                         )}
                         <div className={s.isNew ? "sm:col-span-2" : ""}>
-                          <p className="mb-1 flex items-center gap-1 text-xs font-medium uppercase tracking-wide" style={{ color: C.green }}>
-                            ✓ {s.isNew ? "Proposed new content" : "Suggested"}
+                          <p
+                            className="mb-1 flex items-center gap-1 text-xs font-medium uppercase tracking-wide"
+                            style={{ color: s.rewriteFailed ? C.red : C.green }}
+                          >
+                            {s.rewriteFailed ? "⚠ No rewrite returned -- showing original text" : `✓ ${s.isNew ? "Proposed new content" : "Suggested"}`}
                           </p>
                           <p className="text-sm" style={{ color: "#c9cedb" }}>{s.suggestedText}</p>
                         </div>
                       </div>
+
+                      {s.rewriteFailed && (
+                        <div className="mt-3 border-t pt-3 text-xs" style={{ borderColor: C.border, color: C.red }}>
+                          The model&apos;s response for this section couldn&apos;t be matched back to its heading, so no rewrite was generated. Try regenerating.
+                        </div>
+                      )}
 
                       {s.entitiesAssigned.length > 0 && (
                         <div className="mt-3 flex flex-wrap gap-1.5">

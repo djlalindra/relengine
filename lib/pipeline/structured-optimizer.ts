@@ -14,6 +14,7 @@ export type SectionOptimization = {
   citabilityBefore: number;
   citabilityAfter: number;
   relevanceImpact: string;
+  rewriteFailed?: boolean; // true when the model never returned a usable rewrite for this section -- surfaced visibly rather than silently echoing currentText as if it were a suggestion
 };
 
 export type StructuredOptimizationResult = {
@@ -45,6 +46,25 @@ Respond ONLY with valid JSON, no markdown fences, no preamble, in this exact sha
 
 function stripJsonFences(text: string): string {
   return text.trim().replace(/^```(?:json)?\s*/, "").replace(/\s*```$/, "").trim();
+}
+
+/**
+ * Headings are matched against the model's response to wire rewrites back
+ * to the right section. Exact string equality is too brittle -- models
+ * routinely normalize trailing punctuation, collapse whitespace, or
+ * change case when echoing a heading back, even when explicitly told to
+ * reproduce it exactly. Normalize both sides the same way before
+ * comparing: lowercase, collapse whitespace, strip trailing/leading
+ * punctuation. This is intentionally loose; headings are short and
+ * distinct enough across a single page that this doesn't risk merging
+ * two genuinely different sections.
+ */
+function normalizeHeading(heading: string): string {
+  return heading
+    .toLowerCase()
+    .trim()
+    .replace(/\s+/g, " ")
+    .replace(/^[\s.,:;!?'"()\[\]]+|[\s.,:;!?'"()\[\]]+$/g, "");
 }
 
 /**
@@ -246,17 +266,31 @@ export async function generateStructuredOptimization(
     }
   }
 
-  // Existing sections: matched back to their known metadata by exact
-  // heading. New sections: the model may propose any number of them with
-  // its own headings -- anything marked isNew=true that doesn't match an
-  // existing section's heading is accepted as a genuine new proposal,
-  // rather than being forced to match one predetermined placeholder.
-  const existingHeadings = new Set(sectionMeta.map((m) => m.heading));
+  // Existing sections: matched back to their known metadata by normalized
+  // heading (case/punctuation/whitespace-insensitive -- see
+  // normalizeHeading) rather than brittle exact equality, since the model
+  // frequently echoes headings back with minor formatting differences
+  // even when told not to. New sections: the model may propose any
+  // number of them with its own headings -- anything marked isNew=true
+  // that doesn't match an existing section's heading is accepted as a
+  // genuine new proposal, rather than being forced to match one
+  // predetermined placeholder.
+  const parsedByNormalizedHeading = new Map(
+    parsedSections.map((p) => [normalizeHeading(p.heading), p] as const)
+  );
 
   const sectionResults: SectionOptimization[] = [];
+  const failedHeadings: string[] = [];
 
   for (const meta of sectionMeta) {
-    const match = parsedSections.find((p) => p.heading === meta.heading);
+    const match = parsedByNormalizedHeading.get(normalizeHeading(meta.heading));
+    // No silent fallback: if the model genuinely never returned a rewrite
+    // for this section, currentText is kept only as a display fallback so
+    // the UI has something to show, but rewriteFailed=true marks it so
+    // callers (UI, export) can flag it instead of presenting a no-op as
+    // a real "✓ SUGGESTED" result.
+    const rewriteFailed = !match;
+    if (rewriteFailed) failedHeadings.push(meta.heading);
     const suggestedText = match?.suggestedText ?? meta.currentText;
     sectionResults.push({
       heading: meta.heading,
@@ -267,11 +301,20 @@ export async function generateStructuredOptimization(
       citabilityBefore: meta.currentText ? computeCitability(meta.currentText).score : 0,
       citabilityAfter: computeCitability(suggestedText).score,
       relevanceImpact: match?.relevanceImpact ?? "",
+      rewriteFailed,
     });
   }
 
+  if (failedHeadings.length > 0) {
+    onProgress(
+      `Warning: model did not return a matching rewrite for ${failedHeadings.length} section(s) -- showing original text unchanged: ${failedHeadings.join(", ")}`
+    );
+  }
+
+  const existingHeadingsNormalized = new Set(sectionMeta.map((m) => normalizeHeading(m.heading)));
+
   for (const parsed of parsedSections) {
-    if (parsed.isNew && !existingHeadings.has(parsed.heading)) {
+    if (parsed.isNew && !existingHeadingsNormalized.has(normalizeHeading(parsed.heading))) {
       sectionResults.push({
         heading: parsed.heading,
         isNew: true,
