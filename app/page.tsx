@@ -830,7 +830,7 @@ export default function Home() {
               <div className="flex flex-wrap items-center gap-2 text-sm">
                 <Badge color={C.blue}>{new URL(scrapeResult.target.url).hostname}</Badge>
                 {topic && <span style={{ color: C.muted }}>&ldquo;{topic}&rdquo;</span>}
-                <Badge color={C.purple}>Nemotron + Vertex</Badge>
+                <Badge color={C.purple}>Gemini + Vertex</Badge>
               </div>
               <button
                 onClick={handleExportXlsx}
