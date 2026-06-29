@@ -63,7 +63,7 @@ export async function runEntityAnalyzer(
   signal?: AbortSignal
 ): Promise<EntityAnalyzerResult> {
   const client = getClient();
-  const truncated = text.slice(0, 5000);
+  const truncated = text.slice(0, 75000); // ~10 000 words
   const wordCount = truncated.trim().split(/\s+/).filter(Boolean).length;
   const canClassify = wordCount >= 20;
 

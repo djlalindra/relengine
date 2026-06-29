@@ -1,7 +1,7 @@
 import { NextRequest } from "next/server";
 import { runEntityAnalyzer } from "@/lib/pipeline/entity-analyzer";
 
-const MAX_TEXT = 5000;
+const MAX_TEXT = 75000; // ~10 000 words
 
 function sse(data: object): string {
   return `data: ${JSON.stringify(data)}\n\n`;

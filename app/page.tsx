@@ -1100,12 +1100,13 @@ function EntityAnalyzerTab() {
   const [result, setResult] = useState<EntityAnalyzerResult | null>(null);
 
   const abortRef = useRef<AbortController | null>(null);
-  const charsLeft = 5000 - text.length;
+  const wordCount = text.trim() === "" ? 0 : text.trim().split(/\s+/).length;
+  const MAX_WORDS = 10000;
 
   async function handleRun(e: React.FormEvent) {
     e.preventDefault();
-    const wordCount = text.trim().split(/\s+/).filter(Boolean).length;
-    if (wordCount < 5 || running) return;
+    const wc = text.trim().split(/\s+/).filter(Boolean).length;
+    if (wc < 5 || wc > MAX_WORDS || running) return;
 
     setRunning(true);
     setSteps([]);
@@ -1152,7 +1153,7 @@ function EntityAnalyzerTab() {
           <div>
             <textarea
               value={text}
-              onChange={(e) => setText(e.target.value.slice(0, 5000))}
+              onChange={(e) => setText(e.target.value)}
               placeholder="Paste your article, landing page copy, or any content here…"
               rows={8}
               disabled={running}
@@ -1160,10 +1161,10 @@ function EntityAnalyzerTab() {
             />
             <div className="mt-1 flex items-center justify-between">
               <p className="text-xs text-[var(--accent)]">
-                Up to 5,000 characters (any language). Google&apos;s classifier requires at least 20 words.
+                Up to 10,000 words (any language). Google&apos;s classifier requires at least 20 words.
               </p>
-              <p className={`text-xs font-medium tabular-nums ${charsLeft < 200 ? "text-[var(--red)]" : "text-[var(--muted)]"}`}>
-                {text.length} / 5,000
+              <p className={`text-xs font-medium tabular-nums ${wordCount > MAX_WORDS ? "text-[var(--red)]" : "text-[var(--muted)]"}`}>
+                {wordCount.toLocaleString()} / {MAX_WORDS.toLocaleString()} words
               </p>
             </div>
           </div>
@@ -1200,7 +1201,7 @@ function EntityAnalyzerTab() {
               )}
               <button
                 type="submit"
-                disabled={running || text.trim().split(/\s+/).filter(Boolean).length < 5}
+                disabled={running || wordCount < 5 || wordCount > MAX_WORDS}
                 className="rounded-lg bg-[var(--accent)] px-6 py-2 text-sm font-medium text-white transition hover:bg-blue-700 disabled:opacity-50"
               >
                 {running ? "Analysing…" : "Run Analysis"}
