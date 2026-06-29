@@ -18,8 +18,10 @@ export type SectionOptimization = {
 
 export type StructuredOptimizationResult = {
   sections: SectionOptimization[];
-  overallCurrentScore: number;
+  overallCurrentScore: number; // binary threshold % -- coarse, can stay flat despite real progress
   overallProjectedScore: number | null;
+  overallCurrentSimilarity: number; // continuous average similarity -- shows partial progress the binary score can't
+  overallProjectedSimilarity: number | null;
   projectedScoreUnavailableReason?: string;
   sectionsFound: number;
 };
@@ -111,12 +113,15 @@ export async function generateStructuredOptimization(
   signal?: AbortSignal
 ): Promise<StructuredOptimizationResult> {
   const overallCurrentScore = gapReport.semanticCoverage.coverageScore;
+  const overallCurrentSimilarity = gapReport.semanticCoverage.averageSimilarity;
 
   if (gapReport.missingEntities.length === 0 && gapReport.semanticCoverage.uncoveredPassages.length === 0) {
     return {
       sections: [],
       overallCurrentScore,
       overallProjectedScore: overallCurrentScore,
+      overallCurrentSimilarity,
+      overallProjectedSimilarity: overallCurrentSimilarity,
       sectionsFound: 0,
     };
   }
@@ -282,6 +287,7 @@ export async function generateStructuredOptimization(
 
   onProgress("Recomputing semantic coverage with suggested changes applied...");
   let overallProjectedScore: number | null = null;
+  let overallProjectedSimilarity: number | null = null;
   let projectedScoreUnavailableReason: string | undefined;
 
   try {
@@ -291,6 +297,7 @@ export async function generateStructuredOptimization(
       .map((c) => ({ url: c.url, text: c.text }));
     const newCoverage = await computeSemanticCoverage(optimizedText, competitorTexts);
     overallProjectedScore = newCoverage.coverageScore;
+    overallProjectedSimilarity = newCoverage.averageSimilarity;
   } catch (err) {
     projectedScoreUnavailableReason = err instanceof Error ? err.message : "Unknown error.";
     onProgress(`Could not recompute projected score: ${projectedScoreUnavailableReason}`);
@@ -300,6 +307,8 @@ export async function generateStructuredOptimization(
     sections: sectionResults,
     overallCurrentScore,
     overallProjectedScore,
+    overallCurrentSimilarity,
+    overallProjectedSimilarity,
     projectedScoreUnavailableReason,
     sectionsFound: sections.length,
   };

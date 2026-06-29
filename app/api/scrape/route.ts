@@ -7,6 +7,7 @@ import {
 import { extractEntitiesForPages, buildTopKeywords, isJunkEntity } from "@/lib/pipeline/gap-report";
 import { computeInformationGain } from "@/lib/pipeline/information-gain";
 import { computeTopicalCoverageScore } from "@/lib/pipeline/topical-score";
+import { computeTermRelevance } from "@/lib/pipeline/term-relevance";
 
 const MAX_URLS = 15;
 
@@ -50,7 +51,7 @@ function parseUrlList(raw: string): string[] {
 }
 
 export async function POST(req: NextRequest) {
-  let body: { targetUrl?: string; urls?: string };
+  let body: { targetUrl?: string; urls?: string; searchTerm?: string };
   try {
     body = await req.json();
   } catch {
@@ -58,6 +59,8 @@ export async function POST(req: NextRequest) {
       status: 400,
     });
   }
+
+  const searchTerm = body.searchTerm?.trim() || "";
 
   const targetUrl = body.targetUrl?.trim();
   if (!targetUrl || !isValidUrl(targetUrl)) {
@@ -163,6 +166,27 @@ export async function POST(req: NextRequest) {
           topKeywordTerms
         );
 
+        // Term relevance: how relevant is each page to the LITERAL search
+        // term, not to each other. Optional and best-effort -- if there's
+        // no search term entered, or Vertex fails, this is simply omitted
+        // rather than failing the whole Scrape & Summarize step, since
+        // everything else in this response is still valid without it.
+        let termRelevance: { url: string; overallScore: number; topChunks: { text: string; score: number }[] }[] = [];
+        let termRelevanceError: string | undefined;
+        if (searchTerm) {
+          try {
+            onProgress(`Computing relevance to the search term "${searchTerm}" (Vertex Embeddings)...`);
+            const allPagesForRelevance = [
+              { url: target.url, text: target.text },
+              ...competitors.map((c) => ({ url: c.url, text: c.text })),
+            ];
+            termRelevance = await computeTermRelevance(searchTerm, allPagesForRelevance, onProgress);
+          } catch (err) {
+            termRelevanceError = err instanceof Error ? err.message : "Unknown error.";
+            onProgress(`Term relevance unavailable: ${termRelevanceError}`);
+          }
+        }
+
         const result = {
           target: {
             url: target.url,
@@ -201,6 +225,9 @@ export async function POST(req: NextRequest) {
             };
           }),
           topKeywords,
+          searchTerm,
+          termRelevance,
+          termRelevanceError,
           errors: allErrors,
           // Pass the raw page content + entity data through so Step 2
           // (Optimize) can reuse it without re-fetching or re-extracting.

@@ -258,6 +258,7 @@ export async function buildGapReport(
   let semanticCoverage: SemanticCoverageResult = {
     targetChunks: [],
     coverageScore: 0,
+    averageSimilarity: 0,
     uncoveredPassages: [],
     partialMatchCount: 0,
     strongMatchThreshold: 0.75,

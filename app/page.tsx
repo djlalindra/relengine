@@ -32,10 +32,16 @@ type TopKeyword = {
   presentInTarget: boolean;
 };
 
+type ChunkRelevance = { text: string; score: number };
+type PageTermRelevance = { url: string; overallScore: number; topChunks: ChunkRelevance[] };
+
 type ScrapeResult = {
   target: PageSummary;
   competitors: PageSummary[];
   topKeywords: TopKeyword[];
+  searchTerm: string;
+  termRelevance: PageTermRelevance[];
+  termRelevanceError?: string;
   errors: string[];
   _cache: unknown;
 };
@@ -57,6 +63,7 @@ type GapReport = {
   missingEntities: EntityGap[];
   semanticCoverage: {
     coverageScore: number;
+    averageSimilarity: number;
     uncoveredPassages: PassageMatch[];
     partialMatchCount: number;
     strongMatchThreshold: number;
@@ -80,6 +87,8 @@ type StructuredOptimizationResult = {
   sections: SectionOptimization[];
   overallCurrentScore: number;
   overallProjectedScore: number | null;
+  overallCurrentSimilarity: number;
+  overallProjectedSimilarity: number | null;
   projectedScoreUnavailableReason?: string;
   sectionsFound: number;
 };
@@ -370,7 +379,7 @@ export default function Home() {
     try {
       const result = (await sse.run(
         "/api/scrape",
-        { targetUrl: targetUrl.trim(), urls: urls.trim() },
+        { targetUrl: targetUrl.trim(), urls: urls.trim(), searchTerm: topic.trim() },
         (step) => setScrapeSteps((prev) => [...prev, step]),
         controller.signal
       )) as ScrapeResult;
@@ -505,24 +514,46 @@ export default function Home() {
       ...scrapeResult.competitors.map((c) => ({ url: c.url, label: c.url, entities: c.entities })),
     ];
 
-    const entityTypeByName = new Map<string, string>();
-    const allEntityNames = new Set<string>();
+    // Merge case-variant spellings of the same entity ("Car Accident
+    // Lawyer" vs "car accident lawyer") into one row instead of treating
+    // them as distinct entities. Without this, a term spelled differently
+    // by case across pages can show as present on multiple sides when
+    // it's actually the exact same term -- hiding the real gap (or lack
+    // of one) rather than revealing it. Display name = most frequently
+    // occurring original casing across the whole set; per-page cell =
+    // max salience among all case-variants that page used.
+    const normalizedGroups = new Map<
+      string,
+      { displayCounts: Map<string, number>; type: string; perPageSalience: Map<string, number> }
+    >();
+
     for (const page of allPages) {
       for (const e of page.entities) {
-        allEntityNames.add(e.name);
-        if (!entityTypeByName.has(e.name)) entityTypeByName.set(e.name, e.type);
+        const key = e.name.toLowerCase().trim();
+        let group = normalizedGroups.get(key);
+        if (!group) {
+          group = { displayCounts: new Map(), type: e.type, perPageSalience: new Map() };
+          normalizedGroups.set(key, group);
+        }
+        group.displayCounts.set(e.name, (group.displayCounts.get(e.name) ?? 0) + 1);
+        const existingSalience = group.perPageSalience.get(page.url) ?? 0;
+        if (e.salience > existingSalience) {
+          group.perPageSalience.set(page.url, e.salience);
+        }
       }
     }
 
-    const sortedEntityNames = Array.from(allEntityNames).sort();
+    const sortedKeys = Array.from(normalizedGroups.keys()).sort();
     const matrixHeader = ["Entity", "Type", ...allPages.map((p) => p.label)];
     const matrixRows: (string | number)[][] = [matrixHeader];
 
-    for (const name of sortedEntityNames) {
-      const row: (string | number)[] = [name, entityTypeByName.get(name) ?? ""];
+    for (const key of sortedKeys) {
+      const group = normalizedGroups.get(key)!;
+      const displayName = Array.from(group.displayCounts.entries()).sort((a, b) => b[1] - a[1])[0][0];
+      const row: (string | number)[] = [displayName, group.type];
       for (const page of allPages) {
-        const found = page.entities.find((e) => e.name === name);
-        row.push(found ? found.salience.toFixed(3) : "");
+        const salience = group.perPageSalience.get(page.url);
+        row.push(salience !== undefined ? salience.toFixed(3) : "");
       }
       matrixRows.push(row);
     }
@@ -540,6 +571,22 @@ export default function Home() {
       );
     }
     sheets.push({ name: "Information Gain", rows: infoGainRows });
+
+    if (scrapeResult.searchTerm && scrapeResult.termRelevance.length > 0) {
+      const termRelevanceRows: (string | number)[][] = [
+        ["URL", "Role", "Relevance to Search Term %", "Best Matching Passage"],
+        ...scrapeResult.termRelevance.map((r) => {
+          const isTarget = r.url === scrapeResult.target.url;
+          return [
+            r.url,
+            isTarget ? "Target" : "Competitor",
+            r.overallScore,
+            r.topChunks[0]?.text ?? "",
+          ] as (string | number)[];
+        }),
+      ];
+      sheets.push({ name: "Term Relevance", rows: termRelevanceRows });
+    }
 
     const scrapeReportRows: (string | number)[][] = [
       ["URL", "Role", "Status"],
@@ -662,7 +709,7 @@ export default function Home() {
     : [];
 
   const optimizerInsight = optimizeResult
-    ? `Your page covers ${optimizeResult.gapReport.semanticCoverage.coverageScore}% of competitor passages and is missing ${optimizeResult.gapReport.missingEntities.length} entit${optimizeResult.gapReport.missingEntities.length === 1 ? "y" : "ies"} that competitors mention. Applying the suggested section rewrites below is projected to move semantic coverage from ${optimizeResult.optimization.overallCurrentScore}% to ${optimizeResult.optimization.overallProjectedScore ?? "an unavailable score (Vertex recomputation failed)"}.`
+    ? `Your page covers ${optimizeResult.gapReport.semanticCoverage.coverageScore}% of competitor passages above the strong-match threshold (avg. similarity ${optimizeResult.gapReport.semanticCoverage.averageSimilarity}%) and is missing ${optimizeResult.gapReport.missingEntities.length} entit${optimizeResult.gapReport.missingEntities.length === 1 ? "y" : "ies"} that competitors mention. Applying the suggested section rewrites is projected to move average similarity from ${optimizeResult.optimization.overallCurrentSimilarity}% to ${optimizeResult.optimization.overallProjectedSimilarity ?? "an unavailable score (Vertex recomputation failed)"} -- note the strong-match % alone can stay flat even with real progress, since it only counts passages that fully cross the threshold.`
     : "Run the gap analysis to generate AI-backed optimization insight for this page.";
 
   return (
@@ -852,25 +899,45 @@ export default function Home() {
               {optimizeError && <ErrorBox message={optimizeError} />}
 
               {optimizeResult && (
-                <div className="mt-4 flex items-center gap-6">
-                  <div>
-                    <p className="text-3xl font-bold" style={{ color: C.green }}>
-                      {optimizeResult.optimization.overallCurrentScore}
-                    </p>
-                    <p className="text-xs" style={{ color: C.muted }}>Current</p>
+                <div className="mt-4 space-y-3">
+                  <div className="flex items-center gap-6">
+                    <div>
+                      <p className="text-3xl font-bold" style={{ color: C.green }}>
+                        {optimizeResult.optimization.overallCurrentScore}
+                      </p>
+                      <p className="text-xs" style={{ color: C.muted }}>Current (strong-match %)</p>
+                    </div>
+                    <span style={{ color: C.muted }}>→</span>
+                    <div>
+                      <p className="text-3xl font-bold" style={{ color: C.green }}>
+                        {optimizeResult.optimization.overallProjectedScore ?? "N/A"}
+                      </p>
+                      <p className="text-xs" style={{ color: C.muted }}>Projected</p>
+                    </div>
+                    {optimizeResult.optimization.overallProjectedScore === null && (
+                      <p className="text-xs" style={{ color: C.gold }}>
+                        {optimizeResult.optimization.projectedScoreUnavailableReason}
+                      </p>
+                    )}
                   </div>
-                  <span style={{ color: C.muted }}>→</span>
-                  <div>
-                    <p className="text-3xl font-bold" style={{ color: C.green }}>
-                      {optimizeResult.optimization.overallProjectedScore ?? "N/A"}
+                  <div className="flex items-center gap-6 border-t pt-3" style={{ borderColor: C.border }}>
+                    <div>
+                      <p className="text-xl font-semibold" style={{ color: C.blue }}>
+                        {optimizeResult.optimization.overallCurrentSimilarity}
+                      </p>
+                      <p className="text-xs" style={{ color: C.muted }}>Current (avg. similarity)</p>
+                    </div>
+                    <span style={{ color: C.muted }}>→</span>
+                    <div>
+                      <p className="text-xl font-semibold" style={{ color: C.blue }}>
+                        {optimizeResult.optimization.overallProjectedSimilarity ?? "N/A"}
+                      </p>
+                      <p className="text-xs" style={{ color: C.muted }}>Projected</p>
+                    </div>
+                    <p className="text-xs" style={{ color: C.muted }}>
+                      ← continuous score, shows real partial progress the strong-match % can&apos;t
                     </p>
-                    <p className="text-xs" style={{ color: C.muted }}>Projected</p>
                   </div>
-                  {optimizeResult.optimization.overallProjectedScore === null && (
-                    <p className="text-xs" style={{ color: C.gold }}>
-                      {optimizeResult.optimization.projectedScoreUnavailableReason}
-                    </p>
-                  )}
                 </div>
               )}
             </section>
@@ -1061,6 +1128,50 @@ export default function Home() {
                     accent={!optimizeResult ? "neutral" : criticalGapCount > 0 ? "danger" : "good"}
                   />
                 </div>
+              </section>
+            )}
+
+            {scrapeResult.searchTerm && (
+              <section className="rounded-xl border p-5" style={{ borderColor: C.border, backgroundColor: C.card }}>
+                <p className="mb-1 text-sm font-semibold">Term Relevance — ranked against the literal search term</p>
+                <p className="mb-4 text-xs" style={{ color: C.muted }}>
+                  Unlike every other metric here (which compares pages against each other), this embeds
+                  &ldquo;{scrapeResult.searchTerm}&rdquo; itself and ranks each page&apos;s best-matching passage
+                  against it directly.
+                </p>
+                {scrapeResult.termRelevanceError ? (
+                  <p className="text-sm" style={{ color: C.gold }}>
+                    Unavailable this run: {scrapeResult.termRelevanceError}
+                  </p>
+                ) : scrapeResult.termRelevance.length === 0 ? (
+                  <p className="text-sm" style={{ color: C.muted }}>No data computed.</p>
+                ) : (
+                  <div className="space-y-3">
+                    {[...scrapeResult.termRelevance]
+                      .sort((a, b) => b.overallScore - a.overallScore)
+                      .map((r, i) => {
+                        const isTarget = r.url === scrapeResult.target.url;
+                        return (
+                          <div key={i}>
+                            <div className="mb-1 flex items-center justify-between text-xs">
+                              <span style={{ color: isTarget ? C.green : C.muted }}>
+                                {isTarget ? "YOUR PAGE — " : ""}
+                                {r.url}
+                              </span>
+                              <span style={{ color: isTarget ? C.green : C.text }}>{r.overallScore}%</span>
+                            </div>
+                            <ProgressBar percent={r.overallScore} color={isTarget ? C.green : C.blue} />
+                            {r.topChunks[0] && (
+                              <p className="mt-1 text-xs italic" style={{ color: C.muted }}>
+                                Best match: &ldquo;{r.topChunks[0].text.slice(0, 140)}
+                                {r.topChunks[0].text.length > 140 ? "…" : ""}&rdquo;
+                              </p>
+                            )}
+                          </div>
+                        );
+                      })}
+                  </div>
+                )}
               </section>
             )}
 

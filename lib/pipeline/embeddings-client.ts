@@ -274,6 +274,7 @@ export type PassageMatch = {
 export type SemanticCoverageResult = {
   targetChunks: string[];
   coverageScore: number; // 0-100, % of competitor chunks with a strong match in target
+  averageSimilarity: number; // 0-100, mean best-match similarity across ALL competitor passages -- continuous, shows partial progress the binary coverageScore can't (e.g. a passage improving from 0.55 to 0.70 similarity moves this even though it never crosses the 0.75 strong-match threshold)
   uncoveredPassages: PassageMatch[]; // competitor passages with a GENUINE gap (below realGapThreshold)
   partialMatchCount: number; // passages that aren't a strong match but aren't a real gap either
   strongMatchThreshold: number;
@@ -314,6 +315,7 @@ export async function computeSemanticCoverage(
     return {
       targetChunks,
       coverageScore: 0,
+      averageSimilarity: 0,
       uncoveredPassages: [],
       partialMatchCount: 0,
       strongMatchThreshold,
@@ -329,6 +331,7 @@ export async function computeSemanticCoverage(
   const uncoveredPassages: PassageMatch[] = [];
   let strongMatchCount = 0;
   let partialMatchCount = 0;
+  let similaritySum = 0;
 
   for (let i = 0; i < competitorChunks.length; i++) {
     const compEmbedding = competitorEmbeddings[i];
@@ -338,6 +341,8 @@ export async function computeSemanticCoverage(
       const score = cosineSimilarity(compEmbedding, targetEmbedding);
       if (score > bestScore) bestScore = score;
     }
+
+    similaritySum += bestScore;
 
     if (bestScore >= strongMatchThreshold) {
       strongMatchCount++;
@@ -359,6 +364,9 @@ export async function computeSemanticCoverage(
   const coverageScore = Math.round(
     (strongMatchCount / competitorChunks.length) * 100
   );
+  const averageSimilarity = Math.round(
+    (similaritySum / competitorChunks.length) * 100
+  );
 
   // Sort uncovered passages by how weak the match was (weakest first) so
   // the biggest gaps surface at the top of the report.
@@ -367,6 +375,7 @@ export async function computeSemanticCoverage(
   return {
     targetChunks,
     coverageScore,
+    averageSimilarity,
     uncoveredPassages,
     partialMatchCount,
     strongMatchThreshold,
