@@ -1371,6 +1371,456 @@ function EntityAnalyzerTab() {
 }
 
 /* ---------------------------------------------------------------------- */
+/* Tab: Page Relevance Analyzer                                            */
+/* ---------------------------------------------------------------------- */
+
+type ChunkDetail = { index: number; text: string; scores: number[] };
+type UrlResult = {
+  rank: number; url: string; title: string; chunkCount: number;
+  fetchError?: string; bestScores: number[]; chunks: ChunkDetail[];
+};
+type QueryCoverage = { query: string; isSeed: boolean; coverCount: number; totalUrls: number };
+type PageRelevanceResult = {
+  seed: string; queries: string[]; region: string;
+  urls: UrlResult[]; queryCoverage: QueryCoverage[];
+};
+
+const REGIONS = [
+  { code: "us", label: "United States" },
+  { code: "ca", label: "Canada" },
+  { code: "gb", label: "United Kingdom" },
+  { code: "au", label: "Australia" },
+  { code: "nz", label: "New Zealand" },
+  { code: "ie", label: "Ireland" },
+  { code: "de", label: "Germany" },
+  { code: "fr", label: "France" },
+  { code: "in", label: "India" },
+  { code: "sg", label: "Singapore" },
+];
+
+const TOP_N_OPTIONS = [3, 5, 10, 15];
+
+function scoreStyle(score: number): { backgroundColor: string; color: string; fontWeight: string } {
+  if (score >= 73) return { backgroundColor: "#1d4ed8", color: "white", fontWeight: "700" };
+  if (score >= 65) return { backgroundColor: "#3b82f6", color: "white", fontWeight: "600" };
+  if (score >= 57) return { backgroundColor: "#93c5fd", color: "#1e3a8a", fontWeight: "500" };
+  if (score >= 48) return { backgroundColor: "#dbeafe", color: "#1e40af", fontWeight: "400" };
+  return { backgroundColor: "#f0f9ff", color: "#93c5fd", fontWeight: "400" };
+}
+
+function DiagonalHeader({ label, isSeed }: { label: string; isSeed: boolean }) {
+  const display = label.length > 32 ? label.slice(0, 30) + "…" : label;
+  return (
+    <th style={{ width: 110, height: 150, verticalAlign: "bottom", padding: "0 4px 8px", position: "relative" }}>
+      <div style={{
+        position: "absolute", bottom: 8, left: 8,
+        transform: "rotate(-45deg)", transformOrigin: "bottom left",
+        whiteSpace: "nowrap", fontSize: 11,
+        color: isSeed ? "var(--accent)" : "var(--foreground)",
+        maxWidth: 140,
+        overflow: "hidden",
+        textOverflow: "ellipsis",
+      }}>
+        {isSeed && (
+          <span style={{ fontSize: 9, fontWeight: 700, color: "var(--accent)", marginRight: 4, verticalAlign: "middle" }}>
+            SEED
+          </span>
+        )}
+        {display}
+      </div>
+    </th>
+  );
+}
+
+function HeatmapCell({ score, onClick }: { score: number; onClick?: () => void }) {
+  const style = scoreStyle(score);
+  return (
+    <td style={{ padding: "3px 3px" }}>
+      <div
+        onClick={onClick}
+        style={{
+          ...style,
+          width: 100,
+          height: 44,
+          borderRadius: 8,
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          fontSize: 15,
+          cursor: onClick ? "pointer" : undefined,
+        }}
+      >
+        {score > 0 ? score : "—"}
+      </div>
+    </td>
+  );
+}
+
+function ChunkDrilldown({
+  urlResult,
+  queries,
+  onClose,
+}: {
+  urlResult: UrlResult;
+  queries: string[];
+  onClose: () => void;
+}) {
+  return (
+    <div className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-black/40 pt-16 pb-16 px-4">
+      <div className="w-full max-w-5xl rounded-2xl border border-[var(--border)] bg-white shadow-2xl">
+        <div className="flex items-start justify-between border-b border-[var(--border)] p-5">
+          <div>
+            <p className="text-sm font-semibold text-[var(--foreground)]">
+              #{urlResult.rank} {urlResult.title}
+            </p>
+            <a href={urlResult.url} target="_blank" rel="noopener noreferrer"
+              className="text-xs text-[var(--accent)] hover:underline">
+              {urlResult.url} ↗
+            </a>
+            <p className="mt-1 text-xs text-[var(--muted)]">
+              Per-chunk × query heatmap. Each row is a passage from the page in document order.
+            </p>
+          </div>
+          <button onClick={onClose}
+            className="ml-4 shrink-0 rounded-lg p-1.5 text-[var(--muted)] hover:bg-slate-100">
+            ✕
+          </button>
+        </div>
+        <div className="overflow-x-auto p-4">
+          <table style={{ borderCollapse: "separate", borderSpacing: 0 }}>
+            <thead>
+              <tr>
+                <th style={{ width: 40, verticalAlign: "bottom", paddingBottom: 8 }}>
+                  <span className="text-xs text-[var(--muted)]">#</span>
+                </th>
+                <th style={{ width: 260, verticalAlign: "bottom", paddingBottom: 8, textAlign: "left" }}>
+                  <span className="text-xs text-[var(--muted)]">Chunk</span>
+                </th>
+                {queries.map((q, i) => (
+                  <DiagonalHeader key={i} label={q} isSeed={i === 0} />
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {urlResult.chunks.map((chunk) => (
+                <tr key={chunk.index}>
+                  <td className="pr-2 text-xs text-[var(--muted)] align-top pt-3">{chunk.index}</td>
+                  <td className="pr-4 align-top pt-2">
+                    <p className="text-xs text-[var(--foreground)] leading-relaxed line-clamp-3">
+                      {chunk.text}
+                    </p>
+                  </td>
+                  {chunk.scores.map((score, qi) => (
+                    <HeatmapCell key={qi} score={score} />
+                  ))}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function PageRelevanceTab() {
+  const { run } = useSSE();
+
+  const [seed, setSeed] = useState("");
+  const [region, setRegion] = useState("us");
+  const [topN, setTopN] = useState(3);
+  const [fanoutEnabled, setFanoutEnabled] = useState(true);
+  const [fanoutCount, setFanoutCount] = useState(5);
+
+  const [running, setRunning] = useState(false);
+  const [steps, setSteps] = useState<string[]>([]);
+  const [error, setError] = useState("");
+  const [result, setResult] = useState<PageRelevanceResult | null>(null);
+  const [drilldown, setDrilldown] = useState<UrlResult | null>(null);
+
+  const abortRef = useRef<AbortController | null>(null);
+
+  async function handleRun(e: React.FormEvent) {
+    e.preventDefault();
+    if (!seed.trim() || running) return;
+
+    setRunning(true);
+    setSteps([]);
+    setResult(null);
+    setError("");
+    setDrilldown(null);
+
+    const controller = new AbortController();
+    abortRef.current = controller;
+
+    try {
+      const data = (await run(
+        "/api/page-relevance",
+        { seed: seed.trim(), region, topN, fanoutCount: fanoutEnabled ? fanoutCount : 0 },
+        (step) => setSteps((s) => [...s, step]),
+        controller.signal
+      )) as PageRelevanceResult;
+      setResult(data);
+    } catch (err) {
+      if (err instanceof Error && err.name !== "AbortError") setError(err.message);
+    } finally {
+      setRunning(false);
+    }
+  }
+
+  function handleStop() {
+    abortRef.current?.abort();
+    setRunning(false);
+    setSteps((s) => [...s, "Stopped by user."]);
+  }
+
+  function handleExportCsv() {
+    if (!result) return;
+    const rows: (string | number)[][] = [
+      ["Rank", "URL", "Title", "Chunks", ...result.queries.map((q, i) => i === 0 ? `SEED: ${q}` : q)],
+    ];
+    for (const u of result.urls) {
+      rows.push([u.rank, u.url, u.title, u.chunkCount, ...u.bestScores]);
+    }
+    downloadCsv(`page-relevance-${result.seed.replace(/[^a-z0-9]/gi, "-")}.csv`, rows);
+  }
+
+  return (
+    <div className="space-y-6">
+      <div>
+        <h1 className="text-2xl font-bold text-[var(--foreground)]">Page Relevance Analyzer</h1>
+        <p className="mt-1 text-sm text-[var(--muted)]">
+          Crawl a URL, chunk its content, and compute embedding similarity between each chunk and your target (or AI fan-out) keywords.
+        </p>
+      </div>
+
+      <Card title="">
+        <form onSubmit={handleRun} className="space-y-5">
+          <div className="grid gap-4 sm:grid-cols-2">
+            <div>
+              <label htmlFor="pr-seed" className="mb-1.5 block text-sm font-semibold text-[var(--foreground)]">
+                Seed query
+              </label>
+              <input
+                id="pr-seed"
+                type="text"
+                value={seed}
+                onChange={(e) => setSeed(e.target.value)}
+                placeholder="car accident lawyer toronto"
+                disabled={running}
+                className="w-full rounded-lg border border-[var(--border)] bg-slate-50 px-3 py-2.5 text-sm text-[var(--foreground)] outline-none focus:border-[var(--accent)] focus:ring-2 focus:ring-[var(--accent-soft)] disabled:opacity-50"
+              />
+            </div>
+            <div>
+              <label htmlFor="pr-region" className="mb-1.5 block text-sm font-semibold text-[var(--foreground)]">
+                Region
+              </label>
+              <select
+                id="pr-region"
+                value={region}
+                onChange={(e) => setRegion(e.target.value)}
+                disabled={running}
+                className="w-full rounded-lg border border-[var(--border)] bg-white px-3 py-2.5 text-sm text-[var(--foreground)] outline-none focus:border-[var(--accent)] disabled:opacity-50"
+              >
+                {REGIONS.map((r) => (
+                  <option key={r.code} value={r.code}>{r.label}</option>
+                ))}
+              </select>
+            </div>
+          </div>
+
+          <div className="grid gap-4 sm:grid-cols-2">
+            <div>
+              <div className="mb-3 flex items-center justify-between">
+                <label className="text-sm font-semibold text-[var(--foreground)]">
+                  Expand seed with AI fan-out
+                </label>
+                <button
+                  type="button"
+                  onClick={() => setFanoutEnabled((v) => !v)}
+                  className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors ${
+                    fanoutEnabled ? "bg-[var(--accent)]" : "bg-slate-200"
+                  }`}
+                >
+                  <span className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition-transform ${fanoutEnabled ? "translate-x-5" : "translate-x-0"}`} />
+                </button>
+              </div>
+              {fanoutEnabled && (
+                <div>
+                  <div className="mb-1.5 flex justify-between text-xs text-[var(--muted)]">
+                    <span>Number of fan-out queries</span>
+                    <span className="font-medium tabular-nums">{fanoutCount}</span>
+                  </div>
+                  <input
+                    type="range" min={1} max={14} value={fanoutCount}
+                    onChange={(e) => setFanoutCount(Number(e.target.value))}
+                    disabled={running}
+                    className="w-full accent-[var(--accent)]"
+                  />
+                </div>
+              )}
+            </div>
+
+            <div>
+              <label htmlFor="pr-topn" className="mb-1.5 block text-sm font-semibold text-[var(--foreground)]">
+                Top URLs to analyze
+              </label>
+              <select
+                id="pr-topn"
+                value={topN}
+                onChange={(e) => setTopN(Number(e.target.value))}
+                disabled={running}
+                className="w-full rounded-lg border border-[var(--accent)] bg-white px-3 py-2.5 text-sm text-[var(--foreground)] outline-none focus:border-[var(--accent)] disabled:opacity-50"
+              >
+                {TOP_N_OPTIONS.map((n) => (
+                  <option key={n} value={n}>{n} URLs</option>
+                ))}
+              </select>
+              <p className="mt-1 text-xs text-[var(--muted)]">Free plan caps at 5 URLs per run.</p>
+            </div>
+          </div>
+
+          <div className="flex items-center justify-between pt-1">
+            <p className="text-xs text-[var(--muted)]">0 free runs left</p>
+            <div className="flex gap-2">
+              {running && (
+                <button type="button" onClick={handleStop}
+                  className="rounded-lg border border-red-200 bg-[var(--red-soft)] px-4 py-2 text-sm font-medium text-[var(--red)]">
+                  Stop
+                </button>
+              )}
+              <button
+                type="submit"
+                disabled={running || !seed.trim()}
+                className="flex items-center gap-2 rounded-lg bg-[var(--accent)] px-5 py-2 text-sm font-medium text-white transition hover:bg-blue-700 disabled:opacity-50"
+              >
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
+                  <polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2" />
+                </svg>
+                {running ? "Analyzing…" : "Analyze SERP"}
+              </button>
+            </div>
+          </div>
+        </form>
+
+        <StepStatus steps={steps} running={running} />
+        {error && <ErrorBox message={error} />}
+      </Card>
+
+      {result && (
+        <>
+          <Card
+            title="Coverage Overview"
+            subtitle="Each cell is the best-matching chunk on that URL for that query. Darker = stronger semantic match. Click any URL row to drill into per-chunk detail."
+            action={
+              <div className="flex gap-2">
+                <button onClick={handleExportCsv}
+                  className="flex items-center gap-1.5 rounded-lg border border-[var(--border)] px-3 py-1.5 text-xs font-medium text-[var(--muted)] hover:text-[var(--foreground)]">
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+                  Export CSV
+                </button>
+              </div>
+            }
+          >
+            <div className="mb-3 flex items-center gap-2">
+              <span className="text-xs text-[var(--muted)]">Low</span>
+              <div className="h-3 w-32 rounded-full" style={{
+                background: "linear-gradient(to right, #f0f9ff, #93c5fd, #3b82f6, #1d4ed8)"
+              }} />
+              <span className="text-xs text-[var(--muted)]">High</span>
+            </div>
+            <div className="overflow-x-auto">
+              <table style={{ borderCollapse: "separate", borderSpacing: 0, minWidth: "100%" }}>
+                <thead>
+                  <tr>
+                    <th style={{ width: 260, verticalAlign: "bottom", paddingBottom: 8, textAlign: "left" }}>
+                      <span className="text-xs font-semibold text-[var(--muted)]">URL</span>
+                    </th>
+                    {result.queries.map((q, i) => (
+                      <DiagonalHeader key={i} label={q} isSeed={i === 0} />
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {result.urls.map((u) => (
+                    <tr key={u.rank} className="group">
+                      <td className="py-1 pr-4 align-middle">
+                        <button
+                          onClick={() => setDrilldown(u)}
+                          className="text-left group-hover:underline"
+                          disabled={!!u.fetchError || u.chunkCount === 0}
+                        >
+                          <p className="text-sm font-semibold text-[var(--foreground)]">
+                            #{u.rank} {u.title.length > 40 ? u.title.slice(0, 38) + "…" : u.title}
+                          </p>
+                          <p className="text-xs text-[var(--muted)]">{u.url}</p>
+                          <p className="text-xs text-[var(--muted)]">
+                            {u.fetchError
+                              ? <span className="text-[var(--red)]">{u.fetchError}</span>
+                              : <>{u.chunkCount} chunks · <a href={u.url} target="_blank" rel="noopener noreferrer" className="text-[var(--accent)] hover:underline" onClick={(e) => e.stopPropagation()}>visit ↗</a></>
+                            }
+                          </p>
+                        </button>
+                      </td>
+                      {u.bestScores.map((score, qi) => (
+                        <HeatmapCell
+                          key={qi}
+                          score={score}
+                          onClick={!u.fetchError && u.chunkCount > 0 ? () => setDrilldown(u) : undefined}
+                        />
+                      ))}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </Card>
+
+          <Card
+            title="Query Coverage"
+            subtitle="Share of top-ranking URLs that have at least one strong chunk (≥ 60% similarity) for each query. Low coverage = content gap = your opportunity."
+          >
+            <div className="space-y-3">
+              {result.queryCoverage.map((qc, i) => (
+                <div key={i} className="flex items-center gap-3">
+                  <div className="w-72 shrink-0">
+                    <span className="text-sm text-[var(--foreground)]">{qc.query}</span>
+                    {qc.isSeed && (
+                      <span className="ml-1.5 rounded-full bg-[var(--accent-soft)] px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wide text-[var(--accent)]">
+                        SEED
+                      </span>
+                    )}
+                  </div>
+                  <div className="flex-1">
+                    <div className="h-3 w-full overflow-hidden rounded-full bg-slate-100">
+                      <div
+                        className="h-full rounded-full bg-[var(--accent)] transition-all"
+                        style={{ width: qc.totalUrls > 0 ? `${(qc.coverCount / qc.totalUrls) * 100}%` : "0%" }}
+                      />
+                    </div>
+                  </div>
+                  <span className="w-16 shrink-0 text-right text-sm text-[var(--muted)]">
+                    {qc.coverCount}/{qc.totalUrls} URLs
+                  </span>
+                </div>
+              ))}
+            </div>
+          </Card>
+        </>
+      )}
+
+      {drilldown && (
+        <ChunkDrilldown
+          urlResult={drilldown}
+          queries={result?.queries ?? []}
+          onClose={() => setDrilldown(null)}
+        />
+      )}
+    </div>
+  );
+}
+
+/* ---------------------------------------------------------------------- */
 /* Tab: AI Fan-Out                                                         */
 /* ---------------------------------------------------------------------- */
 
@@ -1770,7 +2220,7 @@ function FanOutTab() {
 /* Top-level: tab bar + header                                             */
 /* ---------------------------------------------------------------------- */
 
-type Tab = "entityanalyzer" | "fanout" | "entity" | "optimize";
+type Tab = "entityanalyzer" | "pagerelevance" | "fanout" | "entity" | "optimize";
 
 const TOOLKIT_TABS: { id: Tab; label: string; icon: React.ReactNode }[] = [
   {
@@ -1788,6 +2238,15 @@ const TOOLKIT_TABS: { id: Tab; label: string; icon: React.ReactNode }[] = [
     icon: (
       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
         <circle cx="18" cy="5" r="3" /><circle cx="6" cy="12" r="3" /><circle cx="18" cy="19" r="3" /><line x1="8.59" y1="13.51" x2="15.42" y2="17.49" /><line x1="15.41" y1="6.51" x2="8.59" y2="10.49" />
+      </svg>
+    ),
+  },
+  {
+    id: "pagerelevance",
+    label: "Page Relevance Analyzer",
+    icon: (
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
+        <polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2" />
       </svg>
     ),
   },
@@ -1864,6 +2323,7 @@ export default function Home() {
 
       <main className="mx-auto max-w-5xl px-6 py-10">
         {activeTab === "entityanalyzer" && <EntityAnalyzerTab />}
+        {activeTab === "pagerelevance" && <PageRelevanceTab />}
         {activeTab === "fanout" && <FanOutTab />}
         {activeTab === "entity" && <EntityAnalysisTab />}
         {activeTab === "optimize" && <OptimizationTab />}
