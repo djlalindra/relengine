@@ -1035,6 +1035,341 @@ function OptimizationTab() {
 }
 
 /* ---------------------------------------------------------------------- */
+/* Tab: Entity Analyzer (text-based, full NLP suite)                      */
+/* ---------------------------------------------------------------------- */
+
+type AnalyzedEntity = {
+  name: string;
+  type: string;
+  salience: number;
+  mentions: number;
+  sentimentScore: number | null;
+  wikipediaUrl?: string;
+};
+
+type EntityAnalyzerResult = {
+  entities: AnalyzedEntity[];
+  documentSentiment: {
+    score: number;
+    magnitude: number;
+    label: string;
+  };
+  categories: { name: string; confidence: number }[];
+  aiBreakdown: string;
+  wordCount: number;
+  entityCount: number;
+};
+
+function entityTypeTone(type: string): "blue" | "purple" | "green" | "gold" | "red" | "slate" {
+  switch (type) {
+    case "PERSON": return "purple";
+    case "ORGANIZATION": return "blue";
+    case "LOCATION": return "green";
+    case "EVENT": return "gold";
+    case "WORK_OF_ART": return "red";
+    default: return "slate";
+  }
+}
+
+function SentimentBar({ score }: { score: number }) {
+  const pct = Math.round(((score + 1) / 2) * 100);
+  const color = score >= 0.1 ? "var(--green)" : score <= -0.1 ? "var(--red)" : "#94a3b8";
+  return (
+    <div className="relative h-2 w-full overflow-hidden rounded-full bg-slate-100">
+      <div className="absolute inset-y-0 left-1/2 w-px bg-slate-300" />
+      <div
+        className="absolute inset-y-0 rounded-full"
+        style={{
+          left: score < 0 ? `${pct}%` : "50%",
+          right: score >= 0 ? `${100 - pct}%` : "50%",
+          backgroundColor: color,
+        }}
+      />
+    </div>
+  );
+}
+
+function EntityAnalyzerTab() {
+  const { run } = useSSE();
+
+  const [text, setText] = useState("");
+  const [keywords, setKeywords] = useState("");
+  const [running, setRunning] = useState(false);
+  const [steps, setSteps] = useState<string[]>([]);
+  const [error, setError] = useState("");
+  const [result, setResult] = useState<EntityAnalyzerResult | null>(null);
+
+  const abortRef = useRef<AbortController | null>(null);
+  const charsLeft = 5000 - text.length;
+
+  async function handleRun(e: React.FormEvent) {
+    e.preventDefault();
+    const wordCount = text.trim().split(/\s+/).filter(Boolean).length;
+    if (wordCount < 5 || running) return;
+
+    setRunning(true);
+    setSteps([]);
+    setResult(null);
+    setError("");
+
+    const controller = new AbortController();
+    abortRef.current = controller;
+
+    try {
+      const data = (await run(
+        "/api/entity-analyzer",
+        { text: text.trim(), keywords: keywords.trim() },
+        (step) => setSteps((s) => [...s, step]),
+        controller.signal
+      )) as EntityAnalyzerResult;
+      setResult(data);
+    } catch (err) {
+      if (err instanceof Error && err.name !== "AbortError") setError(err.message);
+    } finally {
+      setRunning(false);
+    }
+  }
+
+  function handleStop() {
+    abortRef.current?.abort();
+    setRunning(false);
+    setSteps((s) => [...s, "Stopped by user."]);
+  }
+
+  const sentimentColor =
+    result
+      ? result.documentSentiment.score >= 0.1
+        ? "green"
+        : result.documentSentiment.score <= -0.1
+        ? "red"
+        : "slate"
+      : "slate";
+
+  return (
+    <div className="space-y-6">
+      <Card title="Text to analyse" subtitle="Audit content the way Google's NLP API sees it.">
+        <form onSubmit={handleRun} className="space-y-4">
+          <div>
+            <textarea
+              value={text}
+              onChange={(e) => setText(e.target.value.slice(0, 5000))}
+              placeholder="Paste your article, landing page copy, or any content here…"
+              rows={8}
+              disabled={running}
+              className="w-full resize-y rounded-lg border border-[var(--border)] px-3 py-2 text-sm text-[var(--foreground)] outline-none focus:border-[var(--accent)] focus:ring-2 focus:ring-[var(--accent-soft)] disabled:opacity-50"
+            />
+            <div className="mt-1 flex items-center justify-between">
+              <p className="text-xs text-[var(--accent)]">
+                Up to 5,000 characters (any language). Google&apos;s classifier requires at least 20 words.
+              </p>
+              <p className={`text-xs font-medium tabular-nums ${charsLeft < 200 ? "text-[var(--red)]" : "text-[var(--muted)]"}`}>
+                {text.length} / 5,000
+              </p>
+            </div>
+          </div>
+
+          <div>
+            <label htmlFor="ea-keywords" className="mb-1.5 block text-sm font-semibold text-[var(--foreground)]">
+              Target keywords <span className="font-normal text-[var(--muted)]">(optional)</span>
+            </label>
+            <input
+              id="ea-keywords"
+              type="text"
+              value={keywords}
+              onChange={(e) => setKeywords(e.target.value)}
+              placeholder="google nlp, entity analysis, seo tooling"
+              disabled={running}
+              className="w-full rounded-lg border border-[var(--border)] px-3 py-2 text-sm text-[var(--foreground)] outline-none focus:border-[var(--accent)] focus:ring-2 focus:ring-[var(--accent-soft)] disabled:opacity-50"
+            />
+            <p className="mt-1 text-xs text-[var(--muted)]">Used by the AI report to evaluate topical alignment.</p>
+          </div>
+
+          <div className="flex items-center justify-between gap-4 pt-1">
+            <p className="text-xs text-[var(--muted)]">
+              3 free runs across all tools · sign in for more
+            </p>
+            <div className="flex gap-2">
+              {running && (
+                <button
+                  type="button"
+                  onClick={handleStop}
+                  className="rounded-lg border border-red-200 bg-[var(--red-soft)] px-4 py-2 text-sm font-medium text-[var(--red)]"
+                >
+                  Stop
+                </button>
+              )}
+              <button
+                type="submit"
+                disabled={running || text.trim().split(/\s+/).filter(Boolean).length < 5}
+                className="rounded-lg bg-[var(--accent)] px-6 py-2 text-sm font-medium text-white transition hover:bg-blue-700 disabled:opacity-50"
+              >
+                {running ? "Analysing…" : "Run Analysis"}
+              </button>
+            </div>
+          </div>
+        </form>
+
+        <StepStatus steps={steps} running={running} />
+        {error && <ErrorBox message={error} />}
+      </Card>
+
+      {result && (
+        <>
+          <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+            <ScoreCard value={result.entityCount} tone="blue" label="Entities found" />
+            <ScoreCard value={result.wordCount} label="Words analysed" />
+            <ScoreCard
+              value={result.documentSentiment.label}
+              tone={sentimentColor as "green" | "red" | "slate"}
+              label="Document sentiment"
+            />
+            <ScoreCard
+              value={result.categories.length > 0 ? result.categories[0].name.split("/").pop()! : "—"}
+              tone="purple"
+              label="Top content category"
+            />
+          </div>
+
+          <Card title="AI Breakdown" subtitle="What the entity profile signals to Google and how to improve it.">
+            <div className="space-y-2">
+              {result.aiBreakdown
+                .split("\n")
+                .filter((l) => l.trim())
+                .map((line, i) => (
+                  <p key={i} className="text-sm leading-relaxed text-[var(--foreground)]">
+                    {line}
+                  </p>
+                ))}
+            </div>
+          </Card>
+
+          <Card title="Entities" subtitle={`${result.entityCount} entities ranked by salience (how central each is to the text)`}>
+            <div className="overflow-x-auto">
+              <table className="w-full text-left text-sm">
+                <thead>
+                  <tr className="border-b border-[var(--border)] text-xs uppercase tracking-wide text-[var(--muted)]">
+                    <th className="py-2 pr-3">Entity</th>
+                    <th className="py-2 pr-3">Type</th>
+                    <th className="py-2 pr-3 w-32">Salience</th>
+                    <th className="py-2 pr-3">Mentions</th>
+                    <th className="py-2">Sentiment</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {result.entities.map((e, i) => (
+                    <tr key={i} className="border-b border-slate-100">
+                      <td className="py-2 pr-3 font-medium text-[var(--foreground)]">
+                        {e.wikipediaUrl ? (
+                          <a href={e.wikipediaUrl} target="_blank" rel="noopener noreferrer"
+                            className="underline decoration-dotted hover:text-[var(--accent)]">
+                            {e.name}
+                          </a>
+                        ) : e.name}
+                      </td>
+                      <td className="py-2 pr-3">
+                        <Badge tone={entityTypeTone(e.type)}>{e.type}</Badge>
+                      </td>
+                      <td className="py-2 pr-3">
+                        <div className="flex items-center gap-2">
+                          <div className="h-1.5 w-20 overflow-hidden rounded-full bg-slate-100">
+                            <div
+                              className="h-full rounded-full bg-[var(--accent)]"
+                              style={{ width: `${Math.min(100, e.salience * 100)}%` }}
+                            />
+                          </div>
+                          <span className="text-xs tabular-nums text-[var(--muted)]">
+                            {e.salience.toFixed(3)}
+                          </span>
+                        </div>
+                      </td>
+                      <td className="py-2 pr-3 text-[var(--muted)]">{e.mentions}</td>
+                      <td className="py-2">
+                        {e.sentimentScore !== null ? (
+                          <span
+                            className={`text-xs font-medium ${
+                              e.sentimentScore >= 0.15
+                                ? "text-[var(--green)]"
+                                : e.sentimentScore <= -0.15
+                                ? "text-[var(--red)]"
+                                : "text-[var(--muted)]"
+                            }`}
+                          >
+                            {e.sentimentScore >= 0.15
+                              ? "+"
+                              : e.sentimentScore <= -0.15
+                              ? "−"
+                              : ""}
+                            {e.sentimentScore.toFixed(2)}
+                          </span>
+                        ) : (
+                          <span className="text-xs text-slate-300">—</span>
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </Card>
+
+          <div className="grid gap-4 sm:grid-cols-2">
+            <Card title="Document Sentiment">
+              <div className="space-y-4">
+                <SentimentBar score={result.documentSentiment.score} />
+                <div className="grid grid-cols-3 gap-3 text-center">
+                  <div>
+                    <p className="text-xl font-bold text-[var(--foreground)]">
+                      {result.documentSentiment.score >= 0 ? "+" : ""}
+                      {result.documentSentiment.score.toFixed(2)}
+                    </p>
+                    <p className="text-xs text-[var(--muted)]">Score (−1 to +1)</p>
+                  </div>
+                  <div>
+                    <p className="text-xl font-bold text-[var(--foreground)]">
+                      {result.documentSentiment.magnitude.toFixed(2)}
+                    </p>
+                    <p className="text-xs text-[var(--muted)]">Magnitude</p>
+                  </div>
+                  <div>
+                    <p className="text-base font-semibold text-[var(--foreground)]">
+                      {result.documentSentiment.label}
+                    </p>
+                    <p className="text-xs text-[var(--muted)]">Overall tone</p>
+                  </div>
+                </div>
+              </div>
+            </Card>
+
+            {result.categories.length > 0 && (
+              <Card title="Content Categories">
+                <div className="space-y-3">
+                  {result.categories.map((c, i) => (
+                    <div key={i}>
+                      <div className="mb-1 flex items-center justify-between">
+                        <p className="text-xs text-[var(--foreground)] leading-snug">{c.name}</p>
+                        <span className="ml-2 shrink-0 text-xs font-medium text-[var(--muted)]">
+                          {c.confidence}%
+                        </span>
+                      </div>
+                      <div className="h-1.5 w-full overflow-hidden rounded-full bg-slate-100">
+                        <div
+                          className="h-full rounded-full bg-[var(--accent)]"
+                          style={{ width: `${c.confidence}%` }}
+                        />
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </Card>
+            )}
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+/* ---------------------------------------------------------------------- */
 /* Tab: AI Fan-Out                                                         */
 /* ---------------------------------------------------------------------- */
 
@@ -1434,11 +1769,50 @@ function FanOutTab() {
 /* Top-level: tab bar + header                                             */
 /* ---------------------------------------------------------------------- */
 
-type Tab = "entity" | "optimize" | "fanout";
+type Tab = "entityanalyzer" | "fanout" | "entity" | "optimize";
+
+const TOOLKIT_TABS: { id: Tab; label: string; icon: React.ReactNode }[] = [
+  {
+    id: "entityanalyzer",
+    label: "Entity Analysis",
+    icon: (
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+        <circle cx="12" cy="12" r="3" /><circle cx="12" cy="12" r="9" /><line x1="12" y1="3" x2="12" y2="9" /><line x1="12" y1="15" x2="12" y2="21" /><line x1="3" y1="12" x2="9" y2="12" /><line x1="15" y1="12" x2="21" y2="12" />
+      </svg>
+    ),
+  },
+  {
+    id: "fanout",
+    label: "AI Fan-Out",
+    icon: (
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+        <circle cx="18" cy="5" r="3" /><circle cx="6" cy="12" r="3" /><circle cx="18" cy="19" r="3" /><line x1="8.59" y1="13.51" x2="15.42" y2="17.49" /><line x1="15.41" y1="6.51" x2="8.59" y2="10.49" />
+      </svg>
+    ),
+  },
+  {
+    id: "entity",
+    label: "URL Audit",
+    icon: (
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+        <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71" /><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71" />
+      </svg>
+    ),
+  },
+  {
+    id: "optimize",
+    label: "Optimization",
+    icon: (
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+        <polyline points="22 12 18 12 15 21 9 3 6 12 2 12" />
+      </svg>
+    ),
+  },
+];
 
 export default function Home() {
   const router = useRouter();
-  const [activeTab, setActiveTab] = useState<Tab>("entity");
+  const [activeTab, setActiveTab] = useState<Tab>("entityanalyzer");
 
   async function handleLogout() {
     await fetch("/api/logout", { method: "POST" });
@@ -1464,46 +1838,34 @@ export default function Home() {
           </button>
         </div>
 
-        <nav className="mx-auto max-w-5xl px-6">
-          <div className="flex gap-1 border-t border-[var(--border)] pt-2">
-            <button
-              onClick={() => setActiveTab("entity")}
-              className={`rounded-t-lg px-4 py-2 text-sm font-medium transition ${
-                activeTab === "entity"
-                  ? "border-b-2 border-[var(--accent)] text-[var(--accent)]"
-                  : "border-b-2 border-transparent text-[var(--muted)] hover:text-[var(--foreground)]"
-              }`}
-            >
-              Entity Analysis
-            </button>
-            <button
-              onClick={() => setActiveTab("optimize")}
-              className={`rounded-t-lg px-4 py-2 text-sm font-medium transition ${
-                activeTab === "optimize"
-                  ? "border-b-2 border-[var(--accent)] text-[var(--accent)]"
-                  : "border-b-2 border-transparent text-[var(--muted)] hover:text-[var(--foreground)]"
-              }`}
-            >
-              Optimization
-            </button>
-            <button
-              onClick={() => setActiveTab("fanout")}
-              className={`rounded-t-lg px-4 py-2 text-sm font-medium transition ${
-                activeTab === "fanout"
-                  ? "border-b-2 border-[var(--accent)] text-[var(--accent)]"
-                  : "border-b-2 border-transparent text-[var(--muted)] hover:text-[var(--foreground)]"
-              }`}
-            >
-              AI Fan-Out
-            </button>
+        <nav className="mx-auto max-w-5xl border-t border-[var(--border)] px-6 py-3">
+          <div className="flex items-center gap-2 overflow-x-auto pb-0.5">
+            <span className="shrink-0 text-[10px] font-semibold uppercase tracking-[0.15em] text-[var(--muted)] pr-1">
+              Toolkit
+            </span>
+            {TOOLKIT_TABS.map((tab) => (
+              <button
+                key={tab.id}
+                onClick={() => setActiveTab(tab.id)}
+                className={`flex shrink-0 items-center gap-1.5 rounded-full px-3.5 py-1.5 text-xs font-medium transition ${
+                  activeTab === tab.id
+                    ? "bg-[var(--accent)] text-white shadow-sm"
+                    : "border border-[var(--border)] text-[var(--muted)] hover:border-[var(--accent)] hover:text-[var(--accent)]"
+                }`}
+              >
+                {tab.icon}
+                {tab.label}
+              </button>
+            ))}
           </div>
         </nav>
       </header>
 
       <main className="mx-auto max-w-5xl px-6 py-10">
+        {activeTab === "entityanalyzer" && <EntityAnalyzerTab />}
+        {activeTab === "fanout" && <FanOutTab />}
         {activeTab === "entity" && <EntityAnalysisTab />}
         {activeTab === "optimize" && <OptimizationTab />}
-        {activeTab === "fanout" && <FanOutTab />}
       </main>
     </div>
   );
