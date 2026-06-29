@@ -1,8 +1,9 @@
 "use client";
 
-import { useState, useRef } from "react";
+import { useState, useRef, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import { downloadXlsx } from "@/lib/xlsx-export";
+import { downloadCsv } from "@/lib/csv-export";
 
 type EntitySummary = { name: string; type: string; salience: number };
 type HeadingItem = { level: number; text: string };
@@ -1034,10 +1035,406 @@ function OptimizationTab() {
 }
 
 /* ---------------------------------------------------------------------- */
+/* Tab: AI Fan-Out                                                         */
+/* ---------------------------------------------------------------------- */
+
+type QueryIntent =
+  | "informational"
+  | "commercial"
+  | "transactional"
+  | "navigational"
+  | "question"
+  | "comparison"
+  | "local";
+
+type FanOutQuery = { query: string; type: string };
+type FanOutCategory = { name: string; intent: QueryIntent; queries: FanOutQuery[] };
+type FanOutResult = {
+  seed: string;
+  categories: FanOutCategory[];
+  totalQueries: number;
+  entities: string[];
+  generatedAt: string;
+};
+
+const INTENT_COLORS: Record<QueryIntent, string> = {
+  informational: "#3b82f6",
+  commercial: "#8b5cf6",
+  transactional: "#10b981",
+  navigational: "#64748b",
+  question: "#f59e0b",
+  comparison: "#f97316",
+  local: "#ec4899",
+};
+
+const INTENT_TONES: Record<QueryIntent, "blue" | "purple" | "green" | "slate" | "gold" | "red"> = {
+  informational: "blue",
+  commercial: "purple",
+  transactional: "green",
+  navigational: "slate",
+  question: "gold",
+  comparison: "gold",
+  local: "red",
+};
+
+const HISTORY_KEY = "relengine_fanout_history";
+const MAX_HISTORY = 10;
+
+function loadHistory(): FanOutResult[] {
+  try {
+    return JSON.parse(localStorage.getItem(HISTORY_KEY) ?? "[]");
+  } catch {
+    return [];
+  }
+}
+
+function saveToHistory(result: FanOutResult) {
+  const existing = loadHistory().filter((r) => r.seed !== result.seed);
+  const updated = [result, ...existing].slice(0, MAX_HISTORY);
+  localStorage.setItem(HISTORY_KEY, JSON.stringify(updated));
+}
+
+function MindMap({
+  seed,
+  categories,
+  selected,
+  onSelect,
+}: {
+  seed: string;
+  categories: FanOutCategory[];
+  selected: number | null;
+  onSelect: (i: number) => void;
+}) {
+  const cx = 260;
+  const cy = 200;
+  const radius = 145;
+  const n = categories.length;
+
+  return (
+    <svg viewBox="0 0 520 400" className="w-full max-w-xl mx-auto select-none">
+      {categories.map((cat, i) => {
+        const angle = (i / n) * 2 * Math.PI - Math.PI / 2;
+        const x = cx + radius * Math.cos(angle);
+        const y = cy + radius * Math.sin(angle);
+        const color = INTENT_COLORS[cat.intent] ?? "#64748b";
+        const isSelected = selected === i;
+        const words = cat.name.split(" ");
+
+        return (
+          <g key={i} style={{ cursor: "pointer" }} onClick={() => onSelect(i)}>
+            <line
+              x1={cx} y1={cy} x2={x} y2={y}
+              stroke={color}
+              strokeWidth={isSelected ? 2.5 : 1.5}
+              strokeOpacity={isSelected ? 0.9 : 0.35}
+            />
+            <circle
+              cx={x} cy={y} r={isSelected ? 30 : 26}
+              fill={isSelected ? color : "white"}
+              stroke={color}
+              strokeWidth={2}
+              style={{ filter: isSelected ? "drop-shadow(0 2px 6px rgba(0,0,0,0.2))" : undefined }}
+            />
+            {words.length === 1 ? (
+              <text x={x} y={y} textAnchor="middle" dominantBaseline="middle"
+                fontSize={9} fontWeight={isSelected ? "600" : "500"}
+                fill={isSelected ? "white" : color}>
+                {cat.name}
+              </text>
+            ) : (
+              <text x={x} y={y - 5} textAnchor="middle"
+                fontSize={9} fontWeight={isSelected ? "600" : "500"}
+                fill={isSelected ? "white" : color}>
+                {words.slice(0, Math.ceil(words.length / 2)).join(" ")}
+                <tspan x={x} dy="12">{words.slice(Math.ceil(words.length / 2)).join(" ")}</tspan>
+              </text>
+            )}
+            <text x={x} y={isSelected ? y + 20 : y + 16} textAnchor="middle"
+              fontSize={8} fill={isSelected ? "rgba(255,255,255,0.8)" : "#94a3b8"}>
+              {cat.queries.length}
+            </text>
+          </g>
+        );
+      })}
+
+      {/* Center node */}
+      <circle cx={cx} cy={cy} r={44} fill="var(--accent)"
+        style={{ filter: "drop-shadow(0 2px 8px rgba(59,130,246,0.35))" }} />
+      <text x={cx} y={cy - 7} textAnchor="middle" fontSize={10} fontWeight="700" fill="white">
+        {seed.length > 16 ? seed.slice(0, 14) + "…" : seed}
+      </text>
+      <text x={cx} y={cy + 8} textAnchor="middle" fontSize={8} fill="rgba(255,255,255,0.65)">
+        seed keyword
+      </text>
+    </svg>
+  );
+}
+
+function FanOutTab() {
+  const { run } = useSSE();
+
+  const [keyword, setKeyword] = useState("");
+  const [running, setRunning] = useState(false);
+  const [steps, setSteps] = useState<string[]>([]);
+  const [error, setError] = useState("");
+  const [result, setResult] = useState<FanOutResult | null>(null);
+  const [selected, setSelected] = useState<number | null>(null);
+  const [history, setHistory] = useState<FanOutResult[]>([]);
+  const [showHistory, setShowHistory] = useState(false);
+
+  const abortRef = useRef<AbortController | null>(null);
+
+  useEffect(() => {
+    setHistory(loadHistory());
+  }, []);
+
+  async function handleRun(e: React.FormEvent) {
+    e.preventDefault();
+    if (!keyword.trim() || running) return;
+
+    setRunning(true);
+    setSteps([]);
+    setResult(null);
+    setError("");
+    setSelected(null);
+
+    const controller = new AbortController();
+    abortRef.current = controller;
+
+    try {
+      const data = (await run(
+        "/api/fan-out",
+        { keyword: keyword.trim() },
+        (step) => setSteps((s) => [...s, step]),
+        controller.signal
+      )) as FanOutResult;
+      setResult(data);
+      setSelected(0);
+      saveToHistory(data);
+      setHistory(loadHistory());
+    } catch (err) {
+      if (err instanceof Error && err.name !== "AbortError") setError(err.message);
+    } finally {
+      setRunning(false);
+    }
+  }
+
+  function handleStop() {
+    abortRef.current?.abort();
+    setRunning(false);
+    setSteps((s) => [...s, "Stopped by user."]);
+  }
+
+  function handleLoadHistory(run: FanOutResult) {
+    setResult(run);
+    setSelected(0);
+    setKeyword(run.seed);
+    setSteps([]);
+    setError("");
+    setShowHistory(false);
+  }
+
+  function handleExportCsv() {
+    if (!result) return;
+    const rows: (string | number)[][] = [["Category", "Intent", "Type", "Query"]];
+    for (const cat of result.categories) {
+      for (const q of cat.queries) {
+        rows.push([cat.name, cat.intent, q.type, q.query]);
+      }
+    }
+    downloadCsv(`fan-out-${result.seed.replace(/[^a-z0-9]/gi, "-")}.csv`, rows);
+  }
+
+  const activeCat = selected !== null ? result?.categories[selected] : null;
+
+  return (
+    <div className="space-y-6">
+      <Card title="AI Fan-Out" subtitle="Turn one seed keyword into a full SEO query architecture.">
+        <form onSubmit={handleRun} className="space-y-4">
+          <div>
+            <label htmlFor="fo-keyword" className="mb-1.5 block text-xs font-medium text-[var(--muted)]">
+              Seed keyword
+            </label>
+            <input
+              id="fo-keyword"
+              type="text"
+              value={keyword}
+              onChange={(e) => setKeyword(e.target.value)}
+              placeholder="e.g. best running shoes"
+              maxLength={200}
+              disabled={running}
+              className="w-full rounded-lg border border-[var(--border)] px-3 py-2 text-sm text-[var(--foreground)] outline-none focus:border-[var(--accent)] focus:ring-2 focus:ring-[var(--accent-soft)] disabled:opacity-50"
+            />
+          </div>
+
+          <div className="flex gap-2">
+            <button
+              type="submit"
+              disabled={running || !keyword.trim()}
+              className="rounded-lg bg-[var(--accent)] px-4 py-2 text-sm font-medium text-white transition hover:bg-blue-700 disabled:opacity-50"
+            >
+              {running ? "Generating…" : "Generate Query Architecture"}
+            </button>
+            {running && (
+              <button
+                type="button"
+                onClick={handleStop}
+                className="rounded-lg border border-red-200 bg-[var(--red-soft)] px-4 py-2 text-sm font-medium text-[var(--red)]"
+              >
+                Stop
+              </button>
+            )}
+            {history.length > 0 && (
+              <button
+                type="button"
+                onClick={() => setShowHistory((v) => !v)}
+                className="ml-auto rounded-lg border border-[var(--border)] px-4 py-2 text-sm font-medium text-[var(--muted)] hover:text-[var(--foreground)]"
+              >
+                History ({history.length})
+              </button>
+            )}
+          </div>
+        </form>
+
+        <StepStatus steps={steps} running={running} />
+        {error && <ErrorBox message={error} />}
+      </Card>
+
+      {showHistory && history.length > 0 && (
+        <Card title="Historic Runs">
+          <div className="space-y-2">
+            {history.map((h, i) => (
+              <button
+                key={i}
+                onClick={() => handleLoadHistory(h)}
+                className="flex w-full items-center justify-between rounded-lg border border-[var(--border)] px-4 py-3 text-left hover:bg-slate-50"
+              >
+                <div>
+                  <p className="text-sm font-medium text-[var(--foreground)]">{h.seed}</p>
+                  <p className="text-xs text-[var(--muted)]">
+                    {h.totalQueries} queries · {h.categories.length} categories
+                  </p>
+                </div>
+                <span className="shrink-0 text-xs text-[var(--muted)]">
+                  {new Date(h.generatedAt).toLocaleDateString()}
+                </span>
+              </button>
+            ))}
+          </div>
+        </Card>
+      )}
+
+      {result && (
+        <>
+          <div className="grid grid-cols-3 gap-3">
+            <ScoreCard value={result.totalQueries} tone="blue" label="Total queries" />
+            <ScoreCard value={result.categories.length} tone="purple" label="Intent categories" />
+            <ScoreCard value={result.entities.length} tone="green" label="Key entities" />
+          </div>
+
+          {result.entities.length > 0 && (
+            <Card title="Key Entities">
+              <div className="flex flex-wrap gap-1.5">
+                {result.entities.map((e, i) => (
+                  <Badge key={i} tone="purple">{e}</Badge>
+                ))}
+              </div>
+            </Card>
+          )}
+
+          <div className="grid gap-6 lg:grid-cols-2">
+            <Card title="Query Mind Map" subtitle="Click a category to explore its queries.">
+              <MindMap
+                seed={result.seed}
+                categories={result.categories}
+                selected={selected}
+                onSelect={setSelected}
+              />
+              <div className="mt-3 flex flex-wrap justify-center gap-3">
+                {result.categories.map((cat, i) => (
+                  <button
+                    key={i}
+                    onClick={() => setSelected(i)}
+                    className={`flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-medium transition ${
+                      selected === i
+                        ? "bg-[var(--accent)] text-white"
+                        : "border border-[var(--border)] text-[var(--muted)] hover:text-[var(--foreground)]"
+                    }`}
+                  >
+                    <span
+                      className="inline-block h-2 w-2 rounded-full"
+                      style={{ backgroundColor: INTENT_COLORS[cat.intent] }}
+                    />
+                    {cat.name}
+                    <span className="opacity-60">({cat.queries.length})</span>
+                  </button>
+                ))}
+              </div>
+            </Card>
+
+            <Card
+              title={activeCat ? activeCat.name : "Select a category"}
+              subtitle={activeCat ? `${activeCat.queries.length} queries · intent: ${activeCat.intent}` : undefined}
+            >
+              {activeCat ? (
+                <div className="max-h-96 overflow-y-auto space-y-1 pr-1">
+                  {activeCat.queries.map((q, i) => (
+                    <div
+                      key={i}
+                      className="flex items-start gap-2 rounded-lg px-3 py-2 hover:bg-slate-50"
+                    >
+                      <Badge tone={INTENT_TONES[activeCat.intent]}>{q.type}</Badge>
+                      <span className="text-sm text-[var(--foreground)]">{q.query}</span>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <p className="text-sm text-[var(--muted)]">Click a node on the mind map or a category pill above.</p>
+              )}
+            </Card>
+          </div>
+
+          <Card title="All Queries by Category">
+            <div className="space-y-4">
+              {result.categories.map((cat, i) => (
+                <div key={i}>
+                  <div className="mb-2 flex items-center gap-2">
+                    <span
+                      className="inline-block h-3 w-3 rounded-full"
+                      style={{ backgroundColor: INTENT_COLORS[cat.intent] }}
+                    />
+                    <p className="text-sm font-semibold text-[var(--foreground)]">{cat.name}</p>
+                    <span className="text-xs text-[var(--muted)]">({cat.queries.length})</span>
+                  </div>
+                  <div className="grid gap-1 sm:grid-cols-2">
+                    {cat.queries.map((q, j) => (
+                      <p key={j} className="truncate rounded px-2 py-1 text-sm text-[var(--foreground)] hover:bg-slate-50" title={q.query}>
+                        {q.query}
+                      </p>
+                    ))}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </Card>
+
+          <button
+            onClick={handleExportCsv}
+            className="w-full rounded-lg border border-[var(--border)] bg-white py-2.5 text-sm font-medium text-[var(--foreground)] transition hover:bg-slate-50"
+          >
+            Export full query set (.csv)
+          </button>
+        </>
+      )}
+    </div>
+  );
+}
+
+/* ---------------------------------------------------------------------- */
 /* Top-level: tab bar + header                                             */
 /* ---------------------------------------------------------------------- */
 
-type Tab = "entity" | "optimize";
+type Tab = "entity" | "optimize" | "fanout";
 
 export default function Home() {
   const router = useRouter();
@@ -1089,12 +1486,24 @@ export default function Home() {
             >
               Optimization
             </button>
+            <button
+              onClick={() => setActiveTab("fanout")}
+              className={`rounded-t-lg px-4 py-2 text-sm font-medium transition ${
+                activeTab === "fanout"
+                  ? "border-b-2 border-[var(--accent)] text-[var(--accent)]"
+                  : "border-b-2 border-transparent text-[var(--muted)] hover:text-[var(--foreground)]"
+              }`}
+            >
+              AI Fan-Out
+            </button>
           </div>
         </nav>
       </header>
 
       <main className="mx-auto max-w-5xl px-6 py-10">
-        {activeTab === "entity" ? <EntityAnalysisTab /> : <OptimizationTab />}
+        {activeTab === "entity" && <EntityAnalysisTab />}
+        {activeTab === "optimize" && <OptimizationTab />}
+        {activeTab === "fanout" && <FanOutTab />}
       </main>
     </div>
   );
