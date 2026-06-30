@@ -5,6 +5,60 @@ import { useRouter } from "next/navigation";
 import { downloadXlsx } from "@/lib/xlsx-export";
 import { downloadCsv } from "@/lib/csv-export";
 
+/* ---------------------------------------------------------------------- */
+/* History                                                                  */
+/* ---------------------------------------------------------------------- */
+
+type HistoryTool = "entity-analyzer" | "eeat" | "page-relevance" | "fan-out" | "scrape" | "optimize";
+
+type HistoryEntry = {
+  id: string;
+  tool: HistoryTool;
+  label: string;
+  summary: string;
+  ts: number;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  payload: any;
+};
+
+const HISTORY_STORAGE_KEY = "relengine_history_v1";
+const MAX_HISTORY_ENTRIES = 200;
+
+function loadAllHistory(): HistoryEntry[] {
+  if (typeof window === "undefined") return [];
+  try {
+    return JSON.parse(localStorage.getItem(HISTORY_STORAGE_KEY) ?? "[]");
+  } catch {
+    return [];
+  }
+}
+
+function pushHistory(entry: Omit<HistoryEntry, "id" | "ts">): void {
+  if (typeof window === "undefined") return;
+  const all = loadAllHistory();
+  const newEntry: HistoryEntry = { ...entry, id: `${Date.now()}-${Math.random().toString(36).slice(2)}`, ts: Date.now() };
+  const updated = [newEntry, ...all].slice(0, MAX_HISTORY_ENTRIES);
+  localStorage.setItem(HISTORY_STORAGE_KEY, JSON.stringify(updated));
+}
+
+const TOOL_LABELS: Record<HistoryTool, string> = {
+  "entity-analyzer": "Entity Analysis",
+  "eeat": "E-E-A-T Score",
+  "page-relevance": "Page Relevance",
+  "fan-out": "AI Fan-Out",
+  "scrape": "URL Scrape",
+  "optimize": "Optimization",
+};
+
+const TOOL_TONE: Record<HistoryTool, "blue" | "green" | "red" | "gold"> = {
+  "entity-analyzer": "blue",
+  "eeat": "gold",
+  "page-relevance": "green",
+  "fan-out": "blue",
+  "scrape": "gold",
+  "optimize": "green",
+};
+
 type EntitySummary = { name: string; type: string; salience: number };
 type HeadingItem = { level: number; text: string };
 
@@ -476,6 +530,7 @@ function EntityAnalysisTab() {
         controller.signal
       )) as ScrapeResult;
       setResult(data);
+      pushHistory({ tool: "scrape", label: targetUrl.trim(), summary: `${data.competitors.length + 1} pages · ${data.target.wordCount} target words`, payload: { targetUrl: targetUrl.trim() } });
     } catch (err) {
       if (err instanceof Error && err.name !== "AbortError") setError(err.message);
     } finally {
@@ -810,6 +865,7 @@ function OptimizationTab() {
         controller.signal
       )) as OptimizeResult;
       setOptimizeResult(data);
+      pushHistory({ tool: "optimize", label: target.label || "Optimization", summary: `${data.gapReport.missingEntities.length} missing entities · ${data.optimization.sections.length} sections`, payload: { targetLabel: target.label } });
     } catch (err) {
       if (err instanceof Error && err.name !== "AbortError") setError(err.message);
     } finally {
@@ -1103,6 +1159,7 @@ function EntityAnalyzerTab() {
         controller.signal
       )) as EntityAnalyzerResult;
       setResult(data);
+      pushHistory({ tool: "entity-analyzer", label: keywords.trim() || "Entity Analysis", summary: `${data.entityCount} entities · ${data.wordCount} words · ${data.documentSentiment.label}`, payload: { keywords: keywords.trim(), wordCount: data.wordCount } });
     } catch (err) {
       if (err instanceof Error && err.name !== "AbortError") setError(err.message);
     } finally {
@@ -1441,6 +1498,7 @@ function EEATTab() {
         controller.signal
       )) as EEATResult;
       setResult(data);
+      pushHistory({ tool: "eeat", label: url.trim() || domain.trim() || "E-E-A-T", summary: `${data.overallPercent}% · ${data.overallVerdict.split(".")[0]}`, payload: { url: url.trim(), overallPercent: data.overallPercent } });
     } catch (err) {
       if (err instanceof Error && err.name !== "AbortError") setError(err.message);
     } finally {
@@ -1784,6 +1842,7 @@ function PageRelevanceTab() {
         controller.signal
       )) as PageRelevanceResult;
       setResult(data);
+      pushHistory({ tool: "page-relevance", label: queryList[0] ?? "Page Relevance", summary: `${urlList.length} URLs · ${data.queries.length} queries`, payload: { queries: queryList, urls: urlList } });
     } catch (err) {
       if (err instanceof Error && err.name !== "AbortError") setError(err.message);
     } finally {
@@ -2194,6 +2253,7 @@ function FanOutTab() {
       setSelected(0);
       saveToHistory(data);
       setHistory(loadHistory());
+      pushHistory({ tool: "fan-out", label: keyword.trim(), summary: `${data.categories.length} categories`, payload: { keyword: keyword.trim(), categories: data.categories.length } });
     } catch (err) {
       if (err instanceof Error && err.name !== "AbortError") setError(err.message);
     } finally {
@@ -2413,10 +2473,129 @@ function FanOutTab() {
 }
 
 /* ---------------------------------------------------------------------- */
+/* Tab: History                                                             */
+/* ---------------------------------------------------------------------- */
+
+function HistoryTab() {
+  const [entries, setEntries] = useState<HistoryEntry[]>([]);
+  const [filter, setFilter] = useState<HistoryTool | "all">("all");
+
+  useEffect(() => {
+    setEntries(loadAllHistory());
+    const onStorage = () => setEntries(loadAllHistory());
+    window.addEventListener("storage", onStorage);
+    return () => window.removeEventListener("storage", onStorage);
+  }, []);
+
+  function handleClear() {
+    if (!confirm("Clear all history? This cannot be undone.")) return;
+    localStorage.removeItem(HISTORY_STORAGE_KEY);
+    setEntries([]);
+  }
+
+  function handleDelete(id: string) {
+    const updated = loadAllHistory().filter((e) => e.id !== id);
+    localStorage.setItem(HISTORY_STORAGE_KEY, JSON.stringify(updated));
+    setEntries(updated);
+  }
+
+  const filtered = filter === "all" ? entries : entries.filter((e) => e.tool === filter);
+
+  const toolCounts: Partial<Record<HistoryTool | "all", number>> = { all: entries.length };
+  for (const e of entries) {
+    toolCounts[e.tool] = (toolCounts[e.tool] ?? 0) + 1;
+  }
+
+  const filterOptions: { id: HistoryTool | "all"; label: string }[] = [
+    { id: "all", label: "All" },
+    { id: "entity-analyzer", label: "Entity Analysis" },
+    { id: "eeat", label: "E-E-A-T" },
+    { id: "page-relevance", label: "Page Relevance" },
+    { id: "fan-out", label: "AI Fan-Out" },
+    { id: "scrape", label: "URL Scrape" },
+    { id: "optimize", label: "Optimization" },
+  ];
+
+  return (
+    <div className="space-y-6">
+      <div className="flex items-center justify-between">
+        <div>
+          <h1 className="text-2xl font-bold text-[var(--foreground)]">History</h1>
+          <p className="mt-1 text-sm text-[var(--muted)]">All analysis runs saved locally in your browser. {entries.length} total.</p>
+        </div>
+        {entries.length > 0 && (
+          <button onClick={handleClear}
+            className="rounded-lg border border-red-200 bg-[var(--red-soft)] px-3 py-1.5 text-xs font-medium text-[var(--red)] hover:bg-red-100">
+            Clear all
+          </button>
+        )}
+      </div>
+
+      <div className="flex flex-wrap gap-2">
+        {filterOptions.map((opt) => {
+          const count = toolCounts[opt.id] ?? 0;
+          if (opt.id !== "all" && count === 0) return null;
+          return (
+            <button key={opt.id} onClick={() => setFilter(opt.id)}
+              className={`rounded-full px-3 py-1 text-xs font-medium transition ${filter === opt.id ? "bg-[var(--accent)] text-white" : "border border-[var(--border)] text-[var(--muted)] hover:text-[var(--foreground)]"}`}>
+              {opt.label} <span className="ml-1 opacity-70">{count}</span>
+            </button>
+          );
+        })}
+      </div>
+
+      {filtered.length === 0 && (
+        <div className="rounded-xl border border-[var(--border)] bg-slate-50 py-16 text-center">
+          <p className="text-sm text-[var(--muted)]">No history yet. Run an analysis to see it here.</p>
+        </div>
+      )}
+
+      {filtered.length > 0 && (
+        <div className="overflow-hidden rounded-xl border border-[var(--border)]">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="border-b border-[var(--border)] bg-slate-50">
+                <th className="px-4 py-2.5 text-left text-xs font-semibold uppercase tracking-wide text-[var(--muted)]">Tool</th>
+                <th className="px-4 py-2.5 text-left text-xs font-semibold uppercase tracking-wide text-[var(--muted)]">Label</th>
+                <th className="px-4 py-2.5 text-left text-xs font-semibold uppercase tracking-wide text-[var(--muted)]">Summary</th>
+                <th className="px-4 py-2.5 text-left text-xs font-semibold uppercase tracking-wide text-[var(--muted)]">When</th>
+                <th className="px-4 py-2.5 text-xs font-semibold uppercase tracking-wide text-[var(--muted)]" />
+              </tr>
+            </thead>
+            <tbody>
+              {filtered.map((entry, i) => (
+                <tr key={entry.id} className={`border-b border-[var(--border)] ${i % 2 === 0 ? "bg-white" : "bg-slate-50"} hover:bg-blue-50 transition`}>
+                  <td className="px-4 py-2.5">
+                    <Badge tone={TOOL_TONE[entry.tool]}>{TOOL_LABELS[entry.tool]}</Badge>
+                  </td>
+                  <td className="max-w-[200px] truncate px-4 py-2.5 font-medium text-[var(--foreground)]" title={entry.label}>
+                    {entry.label}
+                  </td>
+                  <td className="px-4 py-2.5 text-[var(--muted)]">{entry.summary}</td>
+                  <td className="px-4 py-2.5 text-xs text-[var(--muted)] tabular-nums whitespace-nowrap">
+                    {new Date(entry.ts).toLocaleString()}
+                  </td>
+                  <td className="px-4 py-2.5 text-right">
+                    <button onClick={() => handleDelete(entry.id)}
+                      className="text-xs text-[var(--muted)] hover:text-[var(--red)] transition">
+                      Remove
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ---------------------------------------------------------------------- */
 /* Top-level: tab bar + header                                             */
 /* ---------------------------------------------------------------------- */
 
-type Tab = "entityanalyzer" | "eeat" | "pagerelevance" | "fanout" | "entity" | "optimize";
+type Tab = "entityanalyzer" | "eeat" | "pagerelevance" | "fanout" | "entity" | "optimize" | "history";
 
 const TOOLKIT_TABS: { id: Tab; label: string; icon: React.ReactNode }[] = [
   {
@@ -2470,6 +2649,15 @@ const TOOLKIT_TABS: { id: Tab; label: string; icon: React.ReactNode }[] = [
     icon: (
       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
         <polyline points="22 12 18 12 15 21 9 3 6 12 2 12" />
+      </svg>
+    ),
+  },
+  {
+    id: "history",
+    label: "History",
+    icon: (
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+        <circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/>
       </svg>
     ),
   },
@@ -2533,6 +2721,7 @@ export default function Home() {
         {activeTab === "fanout" && <FanOutTab />}
         {activeTab === "entity" && <EntityAnalysisTab />}
         {activeTab === "optimize" && <OptimizationTab />}
+        {activeTab === "history" && <HistoryTab />}
       </main>
     </div>
   );
