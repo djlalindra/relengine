@@ -46,6 +46,7 @@ export type EntityAnalyzerResult = {
   categories: { name: string; confidence: number }[];
   aiBreakdown: string;
   relatedKeywords: RelatedKeyword[];
+  keywordError?: string;
   wordCount: number;
   entityCount: number;
 };
@@ -151,6 +152,8 @@ Write a concise expert breakdown using exactly 5 bullet points starting with •
 
 Be direct. Reference actual entity names. No generic filler.`;
 
+  let keywordError: string | undefined;
+
   const [aiBreakdown, relatedKeywords] = await Promise.all([
     callModel(
       [{ role: "user", content: aiPrompt }],
@@ -158,21 +161,26 @@ Be direct. Reference actual entity names. No generic filler.`;
     ),
     (async (): Promise<RelatedKeyword[]> => {
       const targetTerm = keywords.trim();
-      if (!targetTerm) return []; // cosine ranking requires a target term
+      if (!targetTerm) return [];
 
-      const topEntityNames = entities.slice(0, 15).map((e) => e.name).join(", ");
-      const catLine = categories.length > 0 ? `Content category: ${categories[0].name}\n` : "";
+      onProgress("Generating keyword candidates with Gemini…");
 
-      // Step 1 — Gemini generates a broad candidate pool
-      const kwPrompt = `You are an SEO keyword researcher. Generate exactly 80 semantically related search keywords for the target term: "${targetTerm}"
+      const kwPrompt = `You are an SEO keyword researcher. Using your training knowledge about the topic, generate exactly 80 search queries that are semantically related to: "${targetTerm}"
 
-${catLine}Top entities found in the content: ${topEntityNames}
+Do NOT derive these from any provided text. Use your knowledge of what people search for around this topic.
+
+Cover a wide variety of intent and format:
+- Long-tail phrase variations
+- Question-based queries (who, what, when, where, why, how)
+- Commercial intent (best, top, reviews, cost, near me)
+- Comparison queries (vs, alternative, difference)
+- Related subtopics and adjacent concepts
+- Local or contextual modifiers
 
 Rules:
-- Mix of long-tail phrases, question-based queries, comparison terms, subtopic variations, local modifiers
-- Realistic search queries (2–6 words each)
+- Each entry must be a realistic search query (2–6 words)
 - No duplicates or near-duplicates
-- Vary intent: informational, commercial, navigational, transactional
+- No generic filler like "best practices guide"
 
 Return ONLY a JSON array of 80 keyword strings, no markdown:
 ["keyword 1", "keyword 2", ...]`;
@@ -183,18 +191,18 @@ Return ONLY a JSON array of 80 keyword strings, no markdown:
           { temperature: 0.75, maxTokens: 1200, signal }
         );
         const s = raw.indexOf("["), e = raw.lastIndexOf("]");
-        if (s === -1 || e === -1) return [];
+        if (s === -1 || e === -1) throw new Error("Gemini returned no JSON array for keyword candidates.");
         const arr = JSON.parse(raw.slice(s, e + 1));
-        if (!Array.isArray(arr) || arr.length === 0) return [];
+        if (!Array.isArray(arr) || arr.length === 0) throw new Error("Keyword candidate array was empty.");
         const candidates: string[] = arr.slice(0, 80).map(String);
 
-        // Step 2 — embed target term + all candidates in one batch
+        onProgress(`Embedding ${candidates.length + 1} texts for cosine ranking…`);
+
         const allTexts = [targetTerm, ...candidates];
         const embeddings = await getEmbeddings(allTexts, (msg) => onProgress(msg));
         const targetEmb = embeddings[0];
         const candidateEmbs = embeddings.slice(1);
 
-        // Step 3 — rank by cosine similarity, return top 30
         return candidates
           .map((keyword, i) => ({
             keyword,
@@ -202,7 +210,8 @@ Return ONLY a JSON array of 80 keyword strings, no markdown:
           }))
           .sort((a, b) => b.similarity - a.similarity)
           .slice(0, 30);
-      } catch {
+      } catch (err) {
+        keywordError = err instanceof Error ? err.message : String(err);
         return [];
       }
     })(),
@@ -216,6 +225,7 @@ Return ONLY a JSON array of 80 keyword strings, no markdown:
     categories,
     aiBreakdown,
     relatedKeywords,
+    keywordError,
     wordCount,
     entityCount: entities.length,
   };

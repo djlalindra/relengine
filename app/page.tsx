@@ -1057,6 +1057,7 @@ type EntityAnalyzerResult = {
   categories: { name: string; confidence: number }[];
   aiBreakdown: string;
   relatedKeywords: { keyword: string; similarity: number }[];
+  keywordError?: string;
   wordCount: number;
   entityCount: number;
 };
@@ -1245,7 +1246,14 @@ function EntityAnalyzerTab() {
             </div>
           </Card>
 
-          {result.relatedKeywords.length > 0 && (
+          {result.keywordError && (
+            <Card title="Top 30 Semantic Keywords" subtitle="Keyword generation failed">
+              <p className="text-sm text-red-500">{result.keywordError}</p>
+              <p className="mt-1 text-xs text-[var(--muted)]">Enter a target keyword in the field above and re-run to generate ranked keywords.</p>
+            </Card>
+          )}
+
+          {!result.keywordError && result.relatedKeywords.length > 0 && (
             <Card
               title="Top 30 Semantic Keywords"
               subtitle={`Ranked by cosine similarity to your target term — higher score = closer semantic match`}
