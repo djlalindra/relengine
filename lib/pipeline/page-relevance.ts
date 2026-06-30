@@ -102,14 +102,14 @@ Return ONLY a JSON array of ${count} strings:
 ["query 1", "query 2", ...]`,
       },
     ],
-    { temperature: 0.7, maxTokens: 600, signal, jsonMode: true }
+    { temperature: 0.7, maxTokens: 2000, signal }
   );
 
   try {
     const s = raw.indexOf("["), e = raw.lastIndexOf("]");
     if (s === -1 || e === -1) return [];
     const arr = JSON.parse(raw.slice(s, e + 1));
-    if (Array.isArray(arr)) return arr.slice(0, count).map(String);
+    if (Array.isArray(arr)) return arr.filter((x) => typeof x === "string" && x.trim()).slice(0, count);
   } catch {
     // fall through
   }
@@ -192,13 +192,21 @@ export async function runPageRelevance(
   let allQueries: string[] = [localizedSeed];
   if (fanoutCount > 0) {
     onProgress(`Generating ${fanoutCount} fan-out query variations…`);
-    const fanout = await generateFanOutQueries(
-      seedQuery.trim(),
-      city.trim(),
-      fanoutCount,
-      signal
-    );
-    allQueries = [localizedSeed, ...fanout];
+    try {
+      const fanout = await generateFanOutQueries(
+        seedQuery.trim(),
+        city.trim(),
+        fanoutCount,
+        signal
+      );
+      if (fanout.length > 0) {
+        allQueries = [localizedSeed, ...fanout];
+      } else {
+        onProgress("Fan-out returned no variations — continuing with seed query only.");
+      }
+    } catch (fanoutErr) {
+      onProgress(`Fan-out failed (${fanoutErr instanceof Error ? fanoutErr.message.split(".")[0] : "error"}) — continuing with seed query only.`);
+    }
   }
 
   if (signal?.aborted) throw new DOMException("Aborted.", "AbortError");

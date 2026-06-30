@@ -24,6 +24,62 @@ type HistoryEntry = {
 const HISTORY_STORAGE_KEY = "relengine_history_v1";
 const MAX_HISTORY_ENTRIES = 200;
 
+function historyPayloadToCsv(tool: HistoryTool, payload: Record<string, unknown>): string {
+  const escape = (v: unknown) => `"${String(v ?? "").replace(/"/g, '""')}"`;
+  const row = (cells: unknown[]) => cells.map(escape).join(",");
+
+  const lines: string[] = [];
+
+  if (tool === "page-relevance") {
+    const p = payload as PageRelevanceResult;
+    lines.push(row(["Rank", "URL", "Title", "Chunks", "Rank Score", ...(p.queries ?? []).map((q, i) => i === 0 ? `SEED: ${q}` : q)]));
+    for (const u of p.urls ?? []) {
+      lines.push(row([u.rank, u.url, u.title, u.chunkCount, u.topRankScore?.toFixed(3) ?? "", ...u.bestScores]));
+    }
+  } else if (tool === "eeat") {
+    const p = payload as { dimensions?: { label: string; criteria: { criterion: string; score: number; reason: string }[]; percent: number }[]; overallPercent?: number };
+    lines.push(row(["Dimension", "Criterion", "Score (0-2)", "Reason"]));
+    for (const d of p.dimensions ?? []) {
+      for (const c of d.criteria ?? []) {
+        lines.push(row([d.label, c.criterion, c.score, c.reason]));
+      }
+    }
+    if (p.overallPercent !== undefined) lines.push(row(["OVERALL", "", `${p.overallPercent}%`, ""]));
+  } else if (tool === "entity-analyzer") {
+    const p = payload as { entities?: { name: string; type: string; salience: number; mentions: number }[]; relatedKeywords?: { keyword: string; similarity: number }[] };
+    lines.push(row(["Name", "Type", "Salience", "Mentions"]));
+    for (const e of p.entities ?? []) {
+      lines.push(row([e.name, e.type, e.salience, e.mentions]));
+    }
+    if ((p.relatedKeywords ?? []).length > 0) {
+      lines.push("");
+      lines.push(row(["Keyword", "Similarity %"]));
+      for (const k of p.relatedKeywords ?? []) {
+        lines.push(row([k.keyword, k.similarity]));
+      }
+    }
+  } else if (tool === "optimize") {
+    const p = payload as { optimization?: { sections?: { heading: string; suggestedText: string; relevanceImpact: string }[] } };
+    lines.push(row(["Heading", "Impact", "Suggested Text"]));
+    for (const s of p.optimization?.sections ?? []) {
+      lines.push(row([s.heading, s.relevanceImpact, s.suggestedText]));
+    }
+  } else if (tool === "fan-out") {
+    const p = payload as { categories?: { name: string; queries: { query: string; type: string }[] }[] };
+    lines.push(row(["Category", "Type", "Query"]));
+    for (const cat of p.categories ?? []) {
+      for (const q of cat.queries ?? []) {
+        lines.push(row([cat.name, q.type, q.query]));
+      }
+    }
+  } else {
+    lines.push(row(["Data"]));
+    lines.push(row([JSON.stringify(payload)]));
+  }
+
+  return lines.join("\n");
+}
+
 function loadAllHistory(): HistoryEntry[] {
   if (typeof window === "undefined") return [];
   try {
@@ -2700,16 +2756,17 @@ function HistoryTab() {
                     <div className="flex items-center justify-end gap-3">
                       <button
                         onClick={() => {
-                          const blob = new Blob([JSON.stringify(entry.payload, null, 2)], { type: "application/json" });
+                          const csv = historyPayloadToCsv(entry.tool, entry.payload as Record<string, unknown>);
+                          const blob = new Blob([csv], { type: "text/csv" });
                           const a = document.createElement("a");
                           a.href = URL.createObjectURL(blob);
-                          a.download = `${entry.tool}-${entry.id}.json`;
+                          a.download = `${entry.tool}-${entry.label.replace(/[^a-z0-9]/gi, "-").slice(0, 40)}.csv`;
                           a.click();
                           URL.revokeObjectURL(a.href);
                         }}
                         className="text-xs text-[var(--accent)] hover:underline transition"
                       >
-                        Download
+                        Download CSV
                       </button>
                       <button onClick={() => handleDelete(entry.id)}
                         className="text-xs text-[var(--muted)] hover:text-[var(--red)] transition">

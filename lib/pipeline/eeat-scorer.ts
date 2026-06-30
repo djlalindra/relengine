@@ -130,7 +130,7 @@ Be direct and evidence-based. Reference specific content from the text when just
 
   const raw = await callModel(
     [{ role: "user", content: prompt }],
-    { temperature: 0.2, maxTokens: 2000, signal, jsonMode: true }
+    { temperature: 0.2, maxTokens: 8000, signal, jsonMode: true }
   );
 
   onProgress("Calculating scores…");
