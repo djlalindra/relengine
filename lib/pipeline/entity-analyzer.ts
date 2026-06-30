@@ -172,8 +172,9 @@ Return ONLY a JSON array of 30 keyword strings, no markdown, no explanation:
           [{ role: "user", content: kwPrompt }],
           { temperature: 0.7, maxTokens: 700, signal }
         );
-        const cleaned = raw.replace(/^```(?:json)?\s*/i, "").replace(/```\s*$/i, "").trim();
-        const arr = JSON.parse(cleaned);
+        const s = raw.indexOf("["), e = raw.lastIndexOf("]");
+        if (s === -1 || e === -1) return [];
+        const arr = JSON.parse(raw.slice(s, e + 1));
         if (Array.isArray(arr)) return arr.slice(0, 30).map(String);
       } catch {
         // non-fatal — return empty

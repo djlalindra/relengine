@@ -131,13 +131,14 @@ Be direct and evidence-based. Reference specific content from the text when just
 
   let parsed: Record<string, { criterion: string; score: number; reason: string }[]>;
   try {
-    const cleaned = raw
-      .replace(/^```(?:json)?\s*/i, "")
-      .replace(/```\s*$/i, "")
-      .trim();
-    parsed = JSON.parse(cleaned);
-  } catch {
-    throw new Error("Gemini returned unparseable JSON for E-E-A-T evaluation.");
+    const start = raw.indexOf("{");
+    const end = raw.lastIndexOf("}");
+    if (start === -1 || end === -1) throw new Error("no JSON object found");
+    parsed = JSON.parse(raw.slice(start, end + 1));
+  } catch (cause) {
+    throw new Error(
+      `Gemini returned unparseable JSON for E-E-A-T evaluation: ${cause instanceof Error ? cause.message : cause}`
+    );
   }
 
   const dimensions: DimensionResult[] = DIMENSIONS.map((d) => {
