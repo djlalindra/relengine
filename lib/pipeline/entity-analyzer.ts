@@ -188,7 +188,7 @@ Return ONLY a JSON array of 80 keyword strings, no markdown:
       try {
         const raw = await callModel(
           [{ role: "user", content: kwPrompt }],
-          { temperature: 0.75, maxTokens: 1200, signal }
+          { temperature: 0.75, maxTokens: 1200, signal, jsonMode: true }
         );
         const s = raw.indexOf("["), e = raw.lastIndexOf("]");
         if (s === -1 || e === -1) throw new Error("Gemini returned no JSON array for keyword candidates.");

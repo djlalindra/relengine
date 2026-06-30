@@ -530,7 +530,7 @@ function EntityAnalysisTab() {
         controller.signal
       )) as ScrapeResult;
       setResult(data);
-      pushHistory({ tool: "scrape", label: targetUrl.trim(), summary: `${data.competitors.length + 1} pages · ${data.target.wordCount} target words`, payload: { targetUrl: targetUrl.trim() } });
+      pushHistory({ tool: "scrape", label: targetUrl.trim(), summary: `${data.competitors.length + 1} pages · ${data.target.wordCount} target words`, payload: data });
     } catch (err) {
       if (err instanceof Error && err.name !== "AbortError") setError(err.message);
     } finally {
@@ -865,7 +865,7 @@ function OptimizationTab() {
         controller.signal
       )) as OptimizeResult;
       setOptimizeResult(data);
-      pushHistory({ tool: "optimize", label: target.label || "Optimization", summary: `${data.gapReport.missingEntities.length} missing entities · ${data.optimization.sections.length} sections`, payload: { targetLabel: target.label } });
+      pushHistory({ tool: "optimize", label: target.label || "Optimization", summary: `${data.gapReport.missingEntities.length} missing entities · ${data.optimization.sections.length} sections`, payload: data });
     } catch (err) {
       if (err instanceof Error && err.name !== "AbortError") setError(err.message);
     } finally {
@@ -1159,7 +1159,7 @@ function EntityAnalyzerTab() {
         controller.signal
       )) as EntityAnalyzerResult;
       setResult(data);
-      pushHistory({ tool: "entity-analyzer", label: keywords.trim() || "Entity Analysis", summary: `${data.entityCount} entities · ${data.wordCount} words · ${data.documentSentiment.label}`, payload: { keywords: keywords.trim(), wordCount: data.wordCount } });
+      pushHistory({ tool: "entity-analyzer", label: keywords.trim() || "Entity Analysis", summary: `${data.entityCount} entities · ${data.wordCount} words · ${data.documentSentiment.label}`, payload: data });
     } catch (err) {
       if (err instanceof Error && err.name !== "AbortError") setError(err.message);
     } finally {
@@ -1252,6 +1252,55 @@ function EntityAnalyzerTab() {
 
       {result && (
         <>
+          {/* Keywords FIRST */}
+          {result.keywordError && (
+            <Card title="Top 30 Semantic Keywords" subtitle="Keyword generation failed">
+              <p className="text-sm text-red-500">{result.keywordError}</p>
+              <p className="mt-1 text-xs text-[var(--muted)]">Enter a target keyword in the field above and re-run to generate ranked keywords.</p>
+            </Card>
+          )}
+
+          {!result.keywordError && result.relatedKeywords.length > 0 && (
+            <Card
+              title="Top 30 Semantic Keywords"
+              subtitle={`Ranked by cosine similarity to "${keywords}" — higher score = closer semantic match`}
+            >
+              <div className="overflow-x-auto">
+                <table className="w-full text-left text-sm">
+                  <thead>
+                    <tr className="border-b border-[var(--border)] text-xs uppercase tracking-wide text-[var(--muted)]">
+                      <th className="py-2 pr-3 w-6">#</th>
+                      <th className="py-2 pr-4">Keyword</th>
+                      <th className="py-2 w-40">Similarity</th>
+                      <th className="py-2 w-12 text-right">Score</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {result.relatedKeywords.map((kw, i) => {
+                      const sim = kw.similarity;
+                      const barColor = sim >= 75 ? "var(--green)" : sim >= 60 ? "var(--accent)" : "var(--gold)";
+                      return (
+                        <tr key={i} className="border-b border-slate-100 hover:bg-slate-50">
+                          <td className="py-2 pr-3 text-xs text-[var(--muted)] tabular-nums">{i + 1}</td>
+                          <td className="py-2 pr-4 font-medium text-[var(--foreground)]">{kw.keyword}</td>
+                          <td className="py-2 pr-4">
+                            <div className="h-1.5 w-full overflow-hidden rounded-full bg-slate-100">
+                              <div className="h-full rounded-full transition-all"
+                                style={{ width: `${sim}%`, backgroundColor: barColor }} />
+                            </div>
+                          </td>
+                          <td className="py-2 text-right text-xs font-medium tabular-nums" style={{ color: barColor }}>
+                            {sim}%
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </Card>
+          )}
+
           <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
             <ScoreCard value={result.entityCount} tone="blue" label="Entities found" />
             <ScoreCard value={result.wordCount} label="Words analysed" />
@@ -1280,58 +1329,38 @@ function EntityAnalyzerTab() {
             </div>
           </Card>
 
-          {result.keywordError && (
-            <Card title="Top 30 Semantic Keywords" subtitle="Keyword generation failed">
-              <p className="text-sm text-red-500">{result.keywordError}</p>
-              <p className="mt-1 text-xs text-[var(--muted)]">Enter a target keyword in the field above and re-run to generate ranked keywords.</p>
-            </Card>
-          )}
-
-          {!result.keywordError && result.relatedKeywords.length > 0 && (
-            <Card
-              title="Top 30 Semantic Keywords"
-              subtitle={`Ranked by cosine similarity to your target term — higher score = closer semantic match`}
-            >
-              <div className="overflow-x-auto">
-                <table className="w-full text-left text-sm">
-                  <thead>
-                    <tr className="border-b border-[var(--border)] text-xs uppercase tracking-wide text-[var(--muted)]">
-                      <th className="py-2 pr-3 w-6">#</th>
-                      <th className="py-2 pr-4">Keyword</th>
-                      <th className="py-2 w-40">Similarity</th>
-                      <th className="py-2 w-12 text-right">Score</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {result.relatedKeywords.map((kw, i) => {
-                      const sim = kw.similarity;
-                      const barColor = sim >= 75 ? "var(--green)" : sim >= 60 ? "var(--accent)" : "var(--gold)";
-                      return (
-                        <tr key={i} className="border-b border-slate-100 hover:bg-slate-50">
-                          <td className="py-2 pr-3 text-xs text-[var(--muted)] tabular-nums">{i + 1}</td>
-                          <td className="py-2 pr-4 font-medium text-[var(--foreground)]">{kw.keyword}</td>
-                          <td className="py-2 pr-4">
-                            <div className="h-1.5 w-full overflow-hidden rounded-full bg-slate-100">
-                              <div className="h-full rounded-full transition-all"
-                                style={{ width: `${sim}%`, backgroundColor: barColor }} />
-                            </div>
-                          </td>
-                          <td className="py-2 text-right text-xs font-medium tabular-nums"
-                            style={{ color: barColor }}>
-                            {sim}%
-                          </td>
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
-              </div>
-            </Card>
-          )}
-
           <Card title="Entities" subtitle={`${result.entityCount} entities — browse by type using the tabs below`}>
             <EntityTabsModule entities={result.entities} />
           </Card>
+
+          {/* Export */}
+          <button
+            onClick={() => {
+              const sheets: { name: string; rows: (string | number)[][] }[] = [];
+              if (result.relatedKeywords.length > 0) {
+                sheets.push({ name: "Semantic Keywords", rows: [
+                  ["#", "Keyword", "Similarity Score"],
+                  ...result.relatedKeywords.map((kw, i) => [i + 1, kw.keyword, kw.similarity]),
+                ]});
+              }
+              sheets.push({ name: "Entities", rows: [
+                ["Entity", "Type", "Salience", "Mentions", "Sentiment", "Wikipedia"],
+                ...result.entities.map((e) => [e.name, e.type, e.salience, e.mentions, e.sentimentScore ?? "", e.wikipediaUrl ?? ""]),
+              ]});
+              sheets.push({ name: "Categories", rows: [
+                ["Category", "Confidence %"],
+                ...result.categories.map((c) => [c.name, c.confidence]),
+              ]});
+              sheets.push({ name: "Sentiment", rows: [
+                ["Score", "Magnitude", "Label"],
+                [result.documentSentiment.score, result.documentSentiment.magnitude, result.documentSentiment.label],
+              ]});
+              downloadXlsx(`entity-analysis-${keywords.trim().replace(/[^a-z0-9]/gi, "-") || Date.now()}.xlsx`, sheets);
+            }}
+            className="w-full rounded-lg border border-[var(--border)] bg-white py-2.5 text-sm font-medium text-[var(--foreground)] transition hover:bg-slate-50"
+          >
+            Export entity analysis (.xlsx)
+          </button>
 
           <div className="grid gap-4 sm:grid-cols-2">
             <Card title="Document Sentiment">
@@ -1498,7 +1527,7 @@ function EEATTab() {
         controller.signal
       )) as EEATResult;
       setResult(data);
-      pushHistory({ tool: "eeat", label: url.trim() || domain.trim() || "E-E-A-T", summary: `${data.overallPercent}% · ${data.overallVerdict.split(".")[0]}`, payload: { url: url.trim(), overallPercent: data.overallPercent } });
+      pushHistory({ tool: "eeat", label: url.trim() || domain.trim() || "E-E-A-T", summary: `${data.overallPercent}% · ${data.overallVerdict.split(".")[0]}`, payload: data });
     } catch (err) {
       if (err instanceof Error && err.name !== "AbortError") setError(err.message);
     } finally {
@@ -1656,6 +1685,24 @@ function EEATTab() {
               </div>
             </Card>
           ))}
+
+          {/* EEAT Export */}
+          <button
+            onClick={() => {
+              const rows: (string | number)[][] = [
+                ["Dimension", "Criterion", "Score (0-2)", "Label", "Reason"],
+                ...result.dimensions.flatMap((d) =>
+                  d.criteria.map((c) => [d.label, c.criterion, c.score, c.score === 2 ? "Strong" : c.score === 1 ? "Partial" : "Not Present", c.reason])
+                ),
+                [],
+                ["", "Overall %", result.overallPercent, "", result.overallVerdict],
+              ];
+              downloadXlsx(`eeat-${url.trim().replace(/[^a-z0-9]/gi, "-") || Date.now()}.xlsx`, [{ name: "E-E-A-T Scores", rows }]);
+            }}
+            className="w-full rounded-lg border border-[var(--border)] bg-white py-2.5 text-sm font-medium text-[var(--foreground)] transition hover:bg-slate-50"
+          >
+            Export E-E-A-T report (.xlsx)
+          </button>
         </>
       )}
     </div>
@@ -1842,7 +1889,7 @@ function PageRelevanceTab() {
         controller.signal
       )) as PageRelevanceResult;
       setResult(data);
-      pushHistory({ tool: "page-relevance", label: queryList[0] ?? "Page Relevance", summary: `${urlList.length} URLs · ${data.queries.length} queries`, payload: { queries: queryList, urls: urlList } });
+      pushHistory({ tool: "page-relevance", label: queryList[0] ?? "Page Relevance", summary: `${urlList.length} URLs · ${data.queries.length} queries`, payload: data });
     } catch (err) {
       if (err instanceof Error && err.name !== "AbortError") setError(err.message);
     } finally {
@@ -2253,7 +2300,7 @@ function FanOutTab() {
       setSelected(0);
       saveToHistory(data);
       setHistory(loadHistory());
-      pushHistory({ tool: "fan-out", label: keyword.trim(), summary: `${data.categories.length} categories`, payload: { keyword: keyword.trim(), categories: data.categories.length } });
+      pushHistory({ tool: "fan-out", label: keyword.trim(), summary: `${data.categories.length} categories`, payload: data });
     } catch (err) {
       if (err instanceof Error && err.name !== "AbortError") setError(err.message);
     } finally {
@@ -2576,10 +2623,25 @@ function HistoryTab() {
                     {new Date(entry.ts).toLocaleString()}
                   </td>
                   <td className="px-4 py-2.5 text-right">
-                    <button onClick={() => handleDelete(entry.id)}
-                      className="text-xs text-[var(--muted)] hover:text-[var(--red)] transition">
-                      Remove
-                    </button>
+                    <div className="flex items-center justify-end gap-3">
+                      <button
+                        onClick={() => {
+                          const blob = new Blob([JSON.stringify(entry.payload, null, 2)], { type: "application/json" });
+                          const a = document.createElement("a");
+                          a.href = URL.createObjectURL(blob);
+                          a.download = `${entry.tool}-${entry.id}.json`;
+                          a.click();
+                          URL.revokeObjectURL(a.href);
+                        }}
+                        className="text-xs text-[var(--accent)] hover:underline transition"
+                      >
+                        Download
+                      </button>
+                      <button onClick={() => handleDelete(entry.id)}
+                        className="text-xs text-[var(--muted)] hover:text-[var(--red)] transition">
+                        Remove
+                      </button>
+                    </div>
                   </td>
                 </tr>
               ))}

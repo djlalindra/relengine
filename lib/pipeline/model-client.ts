@@ -100,6 +100,7 @@ export async function callModel(
     maxTokens?: number;
     signal?: AbortSignal;
     onWait?: (message: string) => void;
+    jsonMode?: boolean;
   } = {}
 ): Promise<string> {
   const auth = getAuth();
@@ -122,12 +123,17 @@ export async function callModel(
 
   const url = `https://${region}-aiplatform.googleapis.com/v1/projects/${projectId}/locations/${region}/publishers/google/models/${model}:generateContent`;
 
+  const generationConfig: Record<string, unknown> = {
+    temperature: options.temperature ?? 0.7,
+    maxOutputTokens: options.maxTokens ?? 4000,
+  };
+  if (options.jsonMode) {
+    generationConfig.responseMimeType = "application/json";
+  }
+
   const body: Record<string, unknown> = {
     contents,
-    generationConfig: {
-      temperature: options.temperature ?? 0.7,
-      maxOutputTokens: options.maxTokens ?? 4000,
-    },
+    generationConfig,
   };
   if (systemText) {
     body.systemInstruction = { parts: [{ text: systemText }] };
