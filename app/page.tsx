@@ -1713,16 +1713,20 @@ function EEATTab() {
 /* Tab: Page Relevance Analyzer                                            */
 /* ---------------------------------------------------------------------- */
 
-type ChunkDetail = { index: number; text: string; scores: number[] };
+type ChunkDetail = { index: number; text: string; scores: number[]; rankScore?: number };
 type UrlResult = {
   rank: number; url: string; title: string; chunkCount: number;
-  fetchError?: string; bestScores: number[]; chunks: ChunkDetail[];
+  fetchError?: string; bestScores: number[]; topRankScore?: number; chunks: ChunkDetail[];
 };
 type QueryCoverage = { query: string; isSeed: boolean; coverCount: number; totalUrls: number };
+type QualityAudit = { groundedness: number; contextRelevance: number; notes: string };
 type PageRelevanceResult = {
+  seedQuery: string;
+  city: string;
   queries: string[];
   urls: UrlResult[];
   queryCoverage: QueryCoverage[];
+  qualityAudit?: QualityAudit;
 };
 
 function scoreStyle(score: number): { backgroundColor: string; color: string; fontWeight: string } {
@@ -1848,13 +1852,16 @@ function ChunkDrilldown({
   );
 }
 
+const TOP_N_OPTIONS = [3, 5, 7, 10];
+
 function PageRelevanceTab() {
   const { run } = useSSE();
 
-  const [urlsText, setUrlsText] = useState("");
-  const [queriesText, setQueriesText] = useState("");
-  const [fanoutEnabled, setFanoutEnabled] = useState(false);
+  const [seedQuery, setSeedQuery] = useState("");
+  const [city, setCity] = useState("");
+  const [fanoutEnabled, setFanoutEnabled] = useState(true);
   const [fanoutCount, setFanoutCount] = useState(5);
+  const [topNPerQuery, setTopNPerQuery] = useState(3);
 
   const [running, setRunning] = useState(false);
   const [steps, setSteps] = useState<string[]>([]);
@@ -1864,9 +1871,7 @@ function PageRelevanceTab() {
 
   const abortRef = useRef<AbortController | null>(null);
 
-  const urlList = urlsText.split(/\n/).map((s) => s.trim()).filter(Boolean);
-  const queryList = queriesText.split(/\n/).map((s) => s.trim()).filter(Boolean);
-  const canRun = urlList.length >= 1 && queryList.length >= 1 && urlList.length <= 10 && queryList.length <= 10;
+  const canRun = seedQuery.trim().length >= 3;
 
   async function handleRun(e: React.FormEvent) {
     e.preventDefault();
@@ -1884,12 +1889,22 @@ function PageRelevanceTab() {
     try {
       const data = (await run(
         "/api/page-relevance",
-        { urls: urlList, queries: queryList, fanoutCount: fanoutEnabled ? fanoutCount : 0 },
+        {
+          seedQuery: seedQuery.trim(),
+          city: city.trim(),
+          fanoutCount: fanoutEnabled ? fanoutCount : 0,
+          topNPerQuery,
+        },
         (step) => setSteps((s) => [...s, step]),
         controller.signal
       )) as PageRelevanceResult;
       setResult(data);
-      pushHistory({ tool: "page-relevance", label: queryList[0] ?? "Page Relevance", summary: `${urlList.length} URLs · ${data.queries.length} queries`, payload: data });
+      pushHistory({
+        tool: "page-relevance",
+        label: seedQuery.trim(),
+        summary: `${data.urls.length} URLs · ${data.queries.length} queries${city.trim() ? ` · ${city.trim()}` : ""}`,
+        payload: data,
+      });
     } catch (err) {
       if (err instanceof Error && err.name !== "AbortError") setError(err.message);
     } finally {
@@ -1906,10 +1921,10 @@ function PageRelevanceTab() {
   function handleExportCsv() {
     if (!result) return;
     const rows: (string | number)[][] = [
-      ["Rank", "URL", "Title", "Chunks", ...result.queries.map((q, i) => i < queryList.length ? `USER: ${q}` : q)],
+      ["Rank", "URL", "Title", "Chunks", "Rank Score", ...result.queries.map((q, i) => i === 0 ? `SEED: ${q}` : q)],
     ];
     for (const u of result.urls) {
-      rows.push([u.rank, u.url, u.title, u.chunkCount, ...u.bestScores]);
+      rows.push([u.rank, u.url, u.title, u.chunkCount, u.topRankScore?.toFixed(3) ?? "", ...u.bestScores]);
     }
     downloadCsv(`page-relevance-${Date.now()}.csv`, rows);
   }
@@ -1919,56 +1934,71 @@ function PageRelevanceTab() {
       <div>
         <h1 className="text-2xl font-bold text-[var(--foreground)]">Page Relevance Analyzer</h1>
         <p className="mt-1 text-sm text-[var(--muted)]">
-          Enter URLs and target queries manually. Vertex AI embeds each page&apos;s content chunks and computes cosine similarity against your queries.
+          Enter a seed keyword and city. Gemini Search Grounding discovers the top organic URLs,
+          Vertex AI embeds and ranks every content chunk, and Gemini audits the quality of results.
         </p>
       </div>
 
       <Card title="">
         <form onSubmit={handleRun} className="space-y-5">
-          <div className="grid gap-5 sm:grid-cols-2">
+          {/* Seed query */}
+          <div>
+            <label htmlFor="pr-seed" className="mb-1.5 block text-sm font-semibold text-[var(--foreground)]">
+              Seed keyword / query
+            </label>
+            <input
+              id="pr-seed"
+              type="text"
+              value={seedQuery}
+              onChange={(e) => setSeedQuery(e.target.value)}
+              placeholder="e.g. car accident lawyer"
+              disabled={running}
+              className="w-full rounded-lg border border-[var(--border)] bg-slate-50 px-3 py-2.5 text-sm text-[var(--foreground)] outline-none focus:border-[var(--accent)] focus:ring-2 focus:ring-[var(--accent-soft)] disabled:opacity-50"
+            />
+          </div>
+
+          {/* City + Top N */}
+          <div className="grid gap-4 sm:grid-cols-2">
             <div>
-              <label htmlFor="pr-urls" className="mb-1.5 block text-sm font-semibold text-[var(--foreground)]">
-                URLs to analyze <span className="font-normal text-[var(--muted)]">(one per line, up to 10)</span>
+              <label htmlFor="pr-city" className="mb-1.5 block text-sm font-semibold text-[var(--foreground)]">
+                City / Location <span className="font-normal text-[var(--muted)]">(optional)</span>
               </label>
-              <textarea
-                id="pr-urls"
-                rows={6}
-                value={urlsText}
-                onChange={(e) => setUrlsText(e.target.value)}
-                placeholder={"https://example.com/page-1\nhttps://competitor.com/article"}
+              <input
+                id="pr-city"
+                type="text"
+                value={city}
+                onChange={(e) => setCity(e.target.value)}
+                placeholder="e.g. Toronto, ON"
                 disabled={running}
-                className="w-full resize-y rounded-lg border border-[var(--border)] bg-slate-50 px-3 py-2.5 text-sm font-mono text-[var(--foreground)] outline-none focus:border-[var(--accent)] focus:ring-2 focus:ring-[var(--accent-soft)] disabled:opacity-50"
+                className="w-full rounded-lg border border-[var(--border)] bg-slate-50 px-3 py-2.5 text-sm text-[var(--foreground)] outline-none focus:border-[var(--accent)] focus:ring-2 focus:ring-[var(--accent-soft)] disabled:opacity-50"
               />
-              <p className="mt-1 text-xs text-[var(--muted)]">
-                {urlList.length > 0 ? `${urlList.length} URL(s) entered` : "No URLs yet"}
-                {urlList.length > 10 && <span className="ml-1 text-[var(--red)]">— max 10</span>}
-              </p>
             </div>
             <div>
-              <label htmlFor="pr-queries" className="mb-1.5 block text-sm font-semibold text-[var(--foreground)]">
-                Target queries <span className="font-normal text-[var(--muted)]">(one per line, up to 10)</span>
+              <label htmlFor="pr-topn" className="mb-1.5 block text-sm font-semibold text-[var(--foreground)]">
+                Top URLs per query
               </label>
-              <textarea
-                id="pr-queries"
-                rows={6}
-                value={queriesText}
-                onChange={(e) => setQueriesText(e.target.value)}
-                placeholder={"car accident lawyer toronto\nbest personal injury lawyer\nhow to file a claim"}
+              <select
+                id="pr-topn"
+                value={topNPerQuery}
+                onChange={(e) => setTopNPerQuery(Number(e.target.value))}
                 disabled={running}
-                className="w-full resize-y rounded-lg border border-[var(--border)] bg-slate-50 px-3 py-2.5 text-sm font-mono text-[var(--foreground)] outline-none focus:border-[var(--accent)] focus:ring-2 focus:ring-[var(--accent-soft)] disabled:opacity-50"
-              />
-              <p className="mt-1 text-xs text-[var(--muted)]">
-                {queryList.length > 0 ? `${queryList.length} quer${queryList.length !== 1 ? "ies" : "y"} entered` : "No queries yet"}
-                {queryList.length > 10 && <span className="ml-1 text-[var(--red)]">— max 10</span>}
-              </p>
+                className="w-full rounded-lg border border-[var(--border)] bg-slate-50 px-3 py-2.5 text-sm text-[var(--foreground)] outline-none focus:border-[var(--accent)] disabled:opacity-50"
+              >
+                {TOP_N_OPTIONS.map((n) => (
+                  <option key={n} value={n}>{n} URLs per query</option>
+                ))}
+              </select>
             </div>
           </div>
 
+          {/* Fan-out toggle */}
           <div className="rounded-lg border border-[var(--border)] bg-slate-50 p-4">
             <div className="flex items-center justify-between">
               <div>
-                <p className="text-sm font-semibold text-[var(--foreground)]">AI fan-out (optional)</p>
-                <p className="text-xs text-[var(--muted)]">Gemini generates additional related queries from your first query</p>
+                <p className="text-sm font-semibold text-[var(--foreground)]">Agentic query fan-out</p>
+                <p className="text-xs text-[var(--muted)]">
+                  Gemini generates {fanoutEnabled ? fanoutCount : "N"} unique localized variations of your seed query for broader SERP coverage
+                </p>
               </div>
               <button
                 type="button"
@@ -1981,12 +2011,15 @@ function PageRelevanceTab() {
             {fanoutEnabled && (
               <div className="mt-3">
                 <div className="mb-1.5 flex justify-between text-xs text-[var(--muted)]">
-                  <span>Fan-out count</span>
+                  <span>Variations to generate</span>
                   <span className="font-medium tabular-nums">{fanoutCount}</span>
                 </div>
-                <input type="range" min={1} max={14} value={fanoutCount}
+                <input
+                  type="range" min={1} max={14} value={fanoutCount}
                   onChange={(e) => setFanoutCount(Number(e.target.value))}
-                  disabled={running} className="w-full accent-[var(--accent)]" />
+                  disabled={running}
+                  className="w-full accent-[var(--accent)]"
+                />
               </div>
             )}
           </div>
@@ -1999,8 +2032,8 @@ function PageRelevanceTab() {
               </button>
             )}
             <button type="submit" disabled={!canRun || running}
-              className="flex items-center gap-2 rounded-lg bg-[var(--accent)] px-5 py-2 text-sm font-medium text-white transition hover:bg-blue-700 disabled:opacity-50">
-              {running ? "Analyzing…" : "Analyze URLs"}
+              className="flex items-center gap-2 rounded-lg bg-[var(--accent)] px-6 py-2.5 text-sm font-semibold text-white transition hover:bg-blue-700 disabled:opacity-50">
+              {running ? "Analyzing…" : "Analyze SERP"}
             </button>
           </div>
         </form>
@@ -2011,17 +2044,44 @@ function PageRelevanceTab() {
 
       {result && (
         <>
-          <Card
-            title="Coverage Overview"
-            subtitle="Each cell is the best-matching chunk on that URL for that query. Darker = stronger semantic match. Click any URL row to drill into per-chunk detail."
-            action={
-              <div className="flex gap-2">
-                <button onClick={handleExportCsv}
-                  className="flex items-center gap-1.5 rounded-lg border border-[var(--border)] px-3 py-1.5 text-xs font-medium text-[var(--muted)] hover:text-[var(--foreground)]">
-                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
-                  Export CSV
-                </button>
+          {/* Quality Audit */}
+          {result.qualityAudit && (
+            <Card title="Quality Audit" subtitle="Gemini's assessment of the pipeline output quality.">
+              <div className="grid gap-4 sm:grid-cols-2">
+                {[
+                  { label: "Groundedness", value: result.qualityAudit.groundedness },
+                  { label: "Context Relevance", value: result.qualityAudit.contextRelevance },
+                ].map(({ label, value }) => (
+                  <div key={label}>
+                    <div className="mb-1 flex justify-between text-sm">
+                      <span className="font-medium text-[var(--foreground)]">{label}</span>
+                      <span className="font-semibold text-[var(--accent)]">{value}%</span>
+                    </div>
+                    <div className="h-2 w-full overflow-hidden rounded-full bg-slate-100">
+                      <div
+                        className="h-full rounded-full bg-[var(--accent)] transition-all"
+                        style={{ width: `${value}%` }}
+                      />
+                    </div>
+                  </div>
+                ))}
               </div>
+              {result.qualityAudit.notes && (
+                <p className="mt-3 text-sm text-[var(--muted)]">{result.qualityAudit.notes}</p>
+              )}
+            </Card>
+          )}
+
+          {/* Heatmap */}
+          <Card
+            title="Coverage Heatmap"
+            subtitle="Best-matching chunk score per URL × query. Darker = stronger semantic match. Click a row to drill into per-chunk detail."
+            action={
+              <button onClick={handleExportCsv}
+                className="flex items-center gap-1.5 rounded-lg border border-[var(--border)] px-3 py-1.5 text-xs font-medium text-[var(--muted)] hover:text-[var(--foreground)]">
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+                Export CSV
+              </button>
             }
           >
             <div className="mb-3 flex items-center gap-2">
@@ -2059,7 +2119,20 @@ function PageRelevanceTab() {
                           <p className="text-xs text-[var(--muted)]">
                             {u.fetchError
                               ? <span className="text-[var(--red)]">{u.fetchError}</span>
-                              : <>{u.chunkCount} chunks · <a href={u.url} target="_blank" rel="noopener noreferrer" className="text-[var(--accent)] hover:underline" onClick={(e) => e.stopPropagation()}>visit ↗</a></>
+                              : (
+                                <>
+                                  {u.chunkCount} chunks
+                                  {u.topRankScore !== undefined && (
+                                    <span className="ml-1.5 text-[var(--accent)]">
+                                      rank {(u.topRankScore * 100).toFixed(0)}%
+                                    </span>
+                                  )}
+                                  {" · "}
+                                  <a href={u.url} target="_blank" rel="noopener noreferrer"
+                                    className="text-[var(--accent)] hover:underline"
+                                    onClick={(e) => e.stopPropagation()}>visit ↗</a>
+                                </>
+                              )
                             }
                           </p>
                         </button>
@@ -2078,9 +2151,10 @@ function PageRelevanceTab() {
             </div>
           </Card>
 
+          {/* Query Coverage */}
           <Card
             title="Query Coverage"
-            subtitle="Share of top-ranking URLs that have at least one strong chunk (≥ 60% similarity) for each query. Low coverage = content gap = your opportunity."
+            subtitle="Share of discovered URLs that have at least one strong chunk (≥ 60% similarity) for each query. Low coverage = content gap = opportunity."
           >
             <div className="space-y-3">
               {result.queryCoverage.map((qc, i) => (

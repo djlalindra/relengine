@@ -6,30 +6,28 @@ function sse(data: object): string {
 }
 
 export async function POST(req: NextRequest) {
-  let body: { urls?: string[]; queries?: string[]; fanoutCount?: number };
+  let body: {
+    seedQuery?: string;
+    city?: string;
+    fanoutCount?: number;
+    topNPerQuery?: number;
+  };
+
   try {
     body = await req.json();
   } catch {
     return new Response(JSON.stringify({ error: "Invalid request body." }), { status: 400 });
   }
 
-  const urls = (body.urls ?? []).map((u) => u.trim()).filter(Boolean);
-  const queries = (body.queries ?? []).map((q) => q.trim()).filter(Boolean);
+  const seedQuery = (body.seedQuery ?? "").trim();
+  const city = (body.city ?? "").trim();
 
-  if (urls.length === 0) {
-    return new Response(JSON.stringify({ error: "At least one URL is required." }), { status: 400 });
-  }
-  if (queries.length === 0) {
-    return new Response(JSON.stringify({ error: "At least one query is required." }), { status: 400 });
-  }
-  if (urls.length > 10) {
-    return new Response(JSON.stringify({ error: "Maximum 10 URLs per run." }), { status: 400 });
-  }
-  if (queries.length > 10) {
-    return new Response(JSON.stringify({ error: "Maximum 10 queries per run." }), { status: 400 });
+  if (!seedQuery) {
+    return new Response(JSON.stringify({ error: "seedQuery is required." }), { status: 400 });
   }
 
-  const fanoutCount = Math.min(10, Math.max(0, Math.round(body.fanoutCount ?? 0)));
+  const fanoutCount = Math.min(14, Math.max(0, Math.round(body.fanoutCount ?? 5)));
+  const topNPerQuery = Math.min(10, Math.max(1, Math.round(body.topNPerQuery ?? 3)));
 
   const controller = new AbortController();
   req.signal.addEventListener("abort", () => controller.abort());
@@ -41,7 +39,14 @@ export async function POST(req: NextRequest) {
         streamController.enqueue(encoder.encode(sse({ type: "progress", step })));
 
       try {
-        const result = await runPageRelevance(urls, queries, fanoutCount, onProgress, controller.signal);
+        const result = await runPageRelevance(
+          seedQuery,
+          city,
+          fanoutCount,
+          topNPerQuery,
+          onProgress,
+          controller.signal
+        );
         streamController.enqueue(encoder.encode(sse({ type: "result", result })));
       } catch (err) {
         const message = err instanceof Error ? err.message : "Unknown error occurred.";
