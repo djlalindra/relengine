@@ -1056,6 +1056,7 @@ type EntityAnalyzerResult = {
   };
   categories: { name: string; confidence: number }[];
   aiBreakdown: string;
+  relatedKeywords: string[];
   wordCount: number;
   entityCount: number;
 };
@@ -1243,6 +1244,24 @@ function EntityAnalyzerTab() {
                 ))}
             </div>
           </Card>
+
+          {result.relatedKeywords.length > 0 && (
+            <Card
+              title="Semantically Related Keywords"
+              subtitle={`${result.relatedKeywords.length} keywords derived from the entity and topic profile of this content`}
+            >
+              <div className="flex flex-wrap gap-1.5">
+                {result.relatedKeywords.map((kw, i) => (
+                  <span
+                    key={i}
+                    className="rounded-full border border-[var(--border)] bg-slate-50 px-3 py-1 text-xs text-[var(--foreground)] hover:border-[var(--accent)] hover:bg-[var(--accent-soft)] hover:text-[var(--accent)] transition-colors cursor-default"
+                  >
+                    {kw}
+                  </span>
+                ))}
+              </div>
+            </Card>
+          )}
 
           <Card title="Entities" subtitle={`${result.entityCount} entities ranked by salience (how central each is to the text)`}>
             <div className="overflow-x-auto">

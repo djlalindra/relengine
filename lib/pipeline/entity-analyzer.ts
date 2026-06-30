@@ -39,6 +39,7 @@ export type EntityAnalyzerResult = {
   };
   categories: { name: string; confidence: number }[];
   aiBreakdown: string;
+  relatedKeywords: string[];
   wordCount: number;
   entityCount: number;
 };
@@ -144,10 +145,42 @@ Write a concise expert breakdown using exactly 5 bullet points starting with •
 
 Be direct. Reference actual entity names. No generic filler.`;
 
-  const aiBreakdown = await callModel(
-    [{ role: "user", content: aiPrompt }],
-    { temperature: 0.45, maxTokens: 900, signal }
-  );
+  const [aiBreakdown, relatedKeywords] = await Promise.all([
+    callModel(
+      [{ role: "user", content: aiPrompt }],
+      { temperature: 0.45, maxTokens: 900, signal }
+    ),
+    (async (): Promise<string[]> => {
+      const topEntityNames = entities.slice(0, 15).map((e) => e.name).join(", ");
+      const catLine = categories.length > 0 ? `\nContent category: ${categories[0].name}` : "";
+      const kwLine = keywords.trim() ? `\nTarget keywords: ${keywords}` : "";
+
+      const kwPrompt = `You are an SEO keyword researcher. Based on the following content signals, generate exactly 30 semantically related keywords useful for content strategy.${catLine}${kwLine}
+Top entities found in the content: ${topEntityNames}
+
+Rules:
+- Mix of long-tail phrases, question-based queries, comparison terms, and subtopic variations
+- Each keyword should be a realistic search query (2-6 words)
+- No duplicates or near-duplicates
+- No generic filler like "best practices" or "how to get started"
+
+Return ONLY a JSON array of 30 keyword strings, no markdown, no explanation:
+["keyword 1", "keyword 2", ...]`;
+
+      try {
+        const raw = await callModel(
+          [{ role: "user", content: kwPrompt }],
+          { temperature: 0.7, maxTokens: 700, signal }
+        );
+        const cleaned = raw.replace(/^```(?:json)?\s*/i, "").replace(/```\s*$/i, "").trim();
+        const arr = JSON.parse(cleaned);
+        if (Array.isArray(arr)) return arr.slice(0, 30).map(String);
+      } catch {
+        // non-fatal — return empty
+      }
+      return [];
+    })(),
+  ]);
 
   onProgress("Done.");
 
@@ -156,6 +189,7 @@ Be direct. Reference actual entity names. No generic filler.`;
     documentSentiment: { score: sentScore, magnitude: sentMag, label: sentimentLabel(sentScore, sentMag) },
     categories,
     aiBreakdown,
+    relatedKeywords,
     wordCount,
     entityCount: entities.length,
   };
