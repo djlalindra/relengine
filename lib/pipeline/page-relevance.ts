@@ -1,5 +1,4 @@
 import { callModel } from "./model-client";
-import { fetchGoogleAiSerp } from "./fetchserp-client";
 import { fetchFullPageContent } from "./content-extractor";
 import { chunkText, getEmbeddings, cosineSimilarity } from "./embeddings-client";
 
@@ -27,9 +26,7 @@ export type QueryCoverage = {
 };
 
 export type PageRelevanceResult = {
-  seed: string;
   queries: string[];
-  region: string;
   urls: UrlResult[];
   queryCoverage: QueryCoverage[];
 };
@@ -68,29 +65,20 @@ Return ONLY a JSON array of ${count} strings, no markdown, no explanation:
 }
 
 export async function runPageRelevance(
-  seed: string,
-  region: string,
-  topN: number,
+  urlList: string[],
+  queryList: string[],
   fanoutCount: number,
   onProgress: (step: string) => void,
   signal?: AbortSignal
 ): Promise<PageRelevanceResult> {
-  onProgress(`Fetching top ${topN} SERP results for "${seed}" (${region})…`);
+  if (urlList.length === 0) throw new Error("At least one URL is required.");
+  if (queryList.length === 0) throw new Error("At least one query is required.");
 
-  const serpResult = await fetchGoogleAiSerp(seed, region);
-  const serpUrls = serpResult.organicResults.slice(0, topN);
-
-  if (serpUrls.length === 0) {
-    throw new Error(
-      "No SERP results returned. Check your FETCHSERP_API_KEY and region code."
-    );
-  }
-
-  const queries: string[] = [seed];
+  const queries: string[] = [...queryList];
 
   if (fanoutCount > 0) {
-    onProgress(`Generating ${fanoutCount} AI fan-out queries…`);
-    const fanout = await generateRelatedQueries(seed, fanoutCount, signal);
+    onProgress(`Generating ${fanoutCount} AI fan-out queries from "${queryList[0]}"…`);
+    const fanout = await generateRelatedQueries(queryList[0], fanoutCount, signal);
     queries.push(...fanout);
   }
 
@@ -103,11 +91,10 @@ export async function runPageRelevance(
 
   const urlResults: UrlResult[] = [];
 
-  for (let i = 0; i < serpUrls.length; i++) {
-    const serpEntry = serpUrls[i];
+  for (let i = 0; i < urlList.length; i++) {
+    const url = urlList[i];
     const rank = i + 1;
-    const url = serpEntry.url;
-    const fallbackTitle = serpEntry.title || url;
+    const fallbackTitle = url;
 
     let hostname = url;
     try {
@@ -116,7 +103,7 @@ export async function runPageRelevance(
       // keep raw url
     }
 
-    onProgress(`[${rank}/${serpUrls.length}] Crawling ${hostname}…`);
+    onProgress(`[${rank}/${urlList.length}] Crawling ${hostname}…`);
 
     const page = await fetchFullPageContent(url);
 
@@ -151,7 +138,7 @@ export async function runPageRelevance(
     }
 
     onProgress(
-      `[${rank}/${serpUrls.length}] Embedding ${rawChunks.length} chunks from ${hostname}…`
+      `[${rank}/${urlList.length}] Embedding ${rawChunks.length} chunks from ${hostname}…`
     );
     const chunkEmbeddings = await getEmbeddings(rawChunks, (msg) => onProgress(msg));
 
@@ -185,12 +172,12 @@ export async function runPageRelevance(
 
   const queryCoverage: QueryCoverage[] = queries.map((q, qi) => ({
     query: q,
-    isSeed: qi === 0,
+    isSeed: qi < queryList.length,
     coverCount: successfulUrls.filter((u) => u.bestScores[qi] >= 60).length,
     totalUrls: successfulUrls.length,
   }));
 
   onProgress("Done.");
 
-  return { seed, queries, region, urls: urlResults, queryCoverage };
+  return { queries, urls: urlResults, queryCoverage };
 }

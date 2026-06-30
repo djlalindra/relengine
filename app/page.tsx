@@ -749,82 +749,82 @@ function EntityAnalysisTab() {
 /* Tab: Optimization                                                        */
 /* ---------------------------------------------------------------------- */
 
+type ContentInput = { label: string; text: string };
+
+function ContentPasteArea({
+  id, label, placeholder, value, onChange, disabled,
+}: { id: string; label: string; placeholder: string; value: ContentInput; onChange: (v: ContentInput) => void; disabled: boolean }) {
+  const wc = value.text.trim().split(/\s+/).filter(Boolean).length;
+  return (
+    <div className="space-y-1.5">
+      <p className="text-xs font-semibold uppercase tracking-wide text-[var(--muted)]">{label}</p>
+      <input id={`${id}-label`} type="text" placeholder="Label / page name (optional)"
+        value={value.label} onChange={(e) => onChange({ ...value, label: e.target.value })}
+        disabled={disabled}
+        className="w-full rounded border border-[var(--border)] px-3 py-1.5 text-xs text-[var(--foreground)] outline-none focus:border-[var(--accent)] disabled:opacity-50" />
+      <textarea id={`${id}-text`} rows={6} placeholder={placeholder}
+        value={value.text} onChange={(e) => onChange({ ...value, text: e.target.value })}
+        disabled={disabled}
+        className="w-full resize-y rounded-lg border border-[var(--border)] bg-slate-50 px-3 py-2 text-sm text-[var(--foreground)] outline-none focus:border-[var(--accent)] focus:ring-2 focus:ring-[var(--accent-soft)] disabled:opacity-50" />
+      <p className="text-xs text-[var(--muted)] tabular-nums">{wc.toLocaleString()} words</p>
+    </div>
+  );
+}
+
 function OptimizationTab() {
   const { run } = useSSE();
 
-  const [targetUrl, setTargetUrl] = useState("");
-  const [urls, setUrls] = useState("");
+  const [target, setTarget] = useState<ContentInput>({ label: "Target Page", text: "" });
+  const [comp1, setComp1] = useState<ContentInput>({ label: "Competitor 1", text: "" });
+  const [comp2, setComp2] = useState<ContentInput>({ label: "Competitor 2", text: "" });
+  const [comp3, setComp3] = useState<ContentInput>({ label: "Competitor 3", text: "" });
 
-  const [scrapeRunning, setScrapeRunning] = useState(false);
-  const [scrapeSteps, setScrapeSteps] = useState<string[]>([]);
-  const [scrapeError, setScrapeError] = useState("");
-  const [scrapeResult, setScrapeResult] = useState<ScrapeResult | null>(null);
-
-  const [optimizeRunning, setOptimizeRunning] = useState(false);
-  const [optimizeSteps, setOptimizeSteps] = useState<string[]>([]);
-  const [optimizeError, setOptimizeError] = useState("");
+  const [running, setRunning] = useState(false);
+  const [steps, setSteps] = useState<string[]>([]);
+  const [error, setError] = useState("");
   const [optimizeResult, setOptimizeResult] = useState<OptimizeResult | null>(null);
 
   const abortRef = useRef<AbortController | null>(null);
 
-  const urlCount = urls.split(/[\n,]+/).map((s) => s.trim()).filter(Boolean).length;
+  const competitors = [comp1, comp2, comp3].filter((c) => c.text.trim().split(/\s+/).filter(Boolean).length >= 50);
+  const targetWc = target.text.trim().split(/\s+/).filter(Boolean).length;
+  const canRun = targetWc >= 50 && competitors.length >= 1;
 
-  async function handleScrape(e: React.FormEvent) {
+  async function handleRun(e: React.FormEvent) {
     e.preventDefault();
-    if (!targetUrl.trim() || urlCount === 0 || scrapeRunning) return;
+    if (!canRun || running) return;
 
-    setScrapeRunning(true);
-    setScrapeSteps([]);
-    setScrapeResult(null);
-    setScrapeError("");
+    setRunning(true);
+    setSteps([]);
     setOptimizeResult(null);
+    setError("");
 
     const controller = new AbortController();
     abortRef.current = controller;
 
     try {
       const data = (await run(
-        "/api/scrape",
-        { targetUrl: targetUrl.trim(), urls: urls.trim(), searchTerm: "" },
-        (step) => setScrapeSteps((s) => [...s, step]),
-        controller.signal
-      )) as ScrapeResult;
-      setScrapeResult(data);
-    } catch (err) {
-      if (err instanceof Error && err.name !== "AbortError") setScrapeError(err.message);
-    } finally {
-      setScrapeRunning(false);
-    }
-  }
-
-  async function handleOptimize() {
-    if (!scrapeResult || optimizeRunning) return;
-
-    setOptimizeRunning(true);
-    setOptimizeSteps([]);
-    setOptimizeResult(null);
-    setOptimizeError("");
-
-    const controller = new AbortController();
-    abortRef.current = controller;
-
-    try {
-      const data = (await run(
-        "/api/optimize",
-        { cache: scrapeResult._cache },
-        (step) => setOptimizeSteps((s) => [...s, step]),
+        "/api/optimize-paste",
+        { target, competitors: [comp1, comp2, comp3].filter((c) => c.text.trim().length > 0) },
+        (step) => setSteps((s) => [...s, step]),
         controller.signal
       )) as OptimizeResult;
       setOptimizeResult(data);
     } catch (err) {
-      if (err instanceof Error && err.name !== "AbortError") setOptimizeError(err.message);
+      if (err instanceof Error && err.name !== "AbortError") setError(err.message);
     } finally {
-      setOptimizeRunning(false);
+      setRunning(false);
     }
   }
 
+  function handleStop() {
+    abortRef.current?.abort();
+    setRunning(false);
+    setSteps((s) => [...s, "Stopped by user."]);
+  }
+
   function handleExport() {
-    if (!scrapeResult || !optimizeResult) return;
+    if (!optimizeResult) return;
 
     function findPlacement(entityName: string): string {
       for (const section of optimizeResult!.optimization.sections) {
@@ -836,137 +836,64 @@ function OptimizationTab() {
     }
 
     const sheets: { name: string; rows: (string | number)[][] }[] = [];
-
-    sheets.push({
-      name: "Missing Entities",
-      rows: [
-        ["Entity", "Type", "Competitors Mentioning", "Avg Salience", "Suggested Placement"],
-        ...optimizeResult.gapReport.missingEntities.map((e) => [
-          e.name, e.type, e.appearsInCompetitors, e.avgSalienceInCompetitors.toFixed(3), findPlacement(e.name),
-        ]),
-      ],
-    });
-
-    sheets.push({
-      name: "Uncovered Passages",
-      rows: [
-        ["Competitor URL", "Match Score", "Passage"],
-        ...optimizeResult.gapReport.semanticCoverage.uncoveredPassages.map((p) => [
-          p.competitorUrl, p.bestMatchScore.toFixed(3), p.competitorChunk,
-        ]),
-      ],
-    });
-
+    sheets.push({ name: "Missing Entities", rows: [
+      ["Entity", "Type", "Competitors Mentioning", "Avg Salience", "Suggested Placement"],
+      ...optimizeResult.gapReport.missingEntities.map((e) => [e.name, e.type, e.appearsInCompetitors, e.avgSalienceInCompetitors.toFixed(3), findPlacement(e.name)]),
+    ]});
+    sheets.push({ name: "Uncovered Passages", rows: [
+      ["Competitor", "Match Score", "Passage"],
+      ...optimizeResult.gapReport.semanticCoverage.uncoveredPassages.map((p) => [p.competitorUrl, p.bestMatchScore.toFixed(3), p.competitorChunk]),
+    ]});
     const optRows: (string | number)[][] = [
-      ["Section", "New Section?", "Rewrite Status", "Citability Before", "Citability After", "Entities Assigned", "Current Text", "Suggested Text", "Relevance Impact"],
-      ...optimizeResult.optimization.sections.map((s) => [
-        s.heading,
-        s.isNew ? "Yes" : "No",
-        s.rewriteFailed ? "FAILED -- no rewrite returned, original text shown" : "OK",
-        s.citabilityBefore,
-        s.citabilityAfter,
-        s.entitiesAssigned.join(", "),
-        s.currentText,
-        s.suggestedText,
-        s.relevanceImpact,
-      ]),
+      ["Section", "New?", "Status", "Citability Before", "Citability After", "Entities", "Current Text", "Suggested Text", "Impact"],
+      ...optimizeResult.optimization.sections.map((s) => [s.heading, s.isNew ? "Yes" : "No", s.rewriteFailed ? "FAILED" : "OK", s.citabilityBefore, s.citabilityAfter, s.entitiesAssigned.join("; "), s.currentText, s.suggestedText, s.relevanceImpact]),
     ];
-    optRows.push([]);
-    optRows.push([
-      "Overall semantic coverage", "", "",
-      optimizeResult.optimization.overallCurrentScore,
-      optimizeResult.optimization.overallProjectedScore ?? "N/A",
-      "", "", "", "",
-    ]);
     sheets.push({ name: "Optimization Plan", rows: optRows });
-
-    downloadXlsx(`optimization-${scrapeResult.target.url.replace(/[^a-z0-9]/gi, "-")}.xlsx`, sheets);
+    downloadXlsx(`optimization-${Date.now()}.xlsx`, sheets);
   }
 
   return (
     <div className="space-y-6">
-      <Card title="Optimization" subtitle="Section-grounded rewrite suggestions with a recomputed, not invented, impact score.">
-        <form onSubmit={handleScrape} className="space-y-4">
-          <div>
-            <label htmlFor="opt-targetUrl" className="mb-1.5 block text-xs font-medium text-[var(--muted)]">
-              Target URL
-            </label>
-            <input
-              id="opt-targetUrl"
-              type="text"
-              value={targetUrl}
-              onChange={(e) => setTargetUrl(e.target.value)}
-              placeholder="https://yoursite.com/your-page"
-              disabled={scrapeRunning}
-              className="w-full rounded-lg border border-[var(--border)] px-3 py-2 text-sm text-[var(--foreground)] outline-none focus:border-[var(--accent)] focus:ring-2 focus:ring-[var(--accent-soft)] disabled:opacity-50"
-            />
-          </div>
+      <div>
+        <h1 className="text-2xl font-bold text-[var(--foreground)]">Content Optimizer</h1>
+        <p className="mt-1 text-sm text-[var(--muted)]">
+          Paste your target page and up to 3 competitors. Google NLP extracts entities, Vertex computes semantic gaps, Gemini writes the rewrite plan.
+        </p>
+      </div>
 
-          <div>
-            <label htmlFor="opt-urls" className="mb-1.5 block text-xs font-medium text-[var(--muted)]">
-              Competitor URLs (at least 1, up to 15)
-            </label>
-            <textarea
-              id="opt-urls"
-              value={urls}
-              onChange={(e) => setUrls(e.target.value)}
-              placeholder={"https://competitor1.com/page\nhttps://competitor2.com/page"}
-              rows={5}
-              disabled={scrapeRunning}
-              className="w-full resize-y rounded-lg border border-[var(--border)] px-3 py-2 text-sm font-mono text-[var(--foreground)] outline-none focus:border-[var(--accent)] focus:ring-2 focus:ring-[var(--accent-soft)] disabled:opacity-50"
-            />
-            <p className="mt-1 text-xs text-[var(--muted)]">
-              {urlCount > 0 ? `${urlCount} URL(s) detected.` : "No competitor URLs entered yet."}
-            </p>
-          </div>
-
-          <button
-            type="submit"
-            disabled={scrapeRunning || !targetUrl.trim() || urlCount === 0}
-            className="w-full rounded-lg bg-[var(--accent)] py-2.5 text-sm font-medium text-white transition hover:bg-blue-700 disabled:opacity-50"
-          >
-            {scrapeRunning ? "Scraping..." : "Step 1: Scrape & Summarize"}
-          </button>
-        </form>
-
-        <StepStatus steps={scrapeSteps} running={scrapeRunning} />
-        {scrapeError && <ErrorBox message={scrapeError} />}
-      </Card>
-
-      {scrapeResult && (
-        <>
-          <Card title="Pages Fetched">
-            <div className="space-y-2 text-sm">
-              <div className="flex items-center justify-between rounded-lg border border-[var(--border)] px-4 py-2">
-                <span className="flex items-center gap-2">
-                  <Badge tone="blue">Target</Badge>
-                  <span className="font-medium text-[var(--foreground)]">{scrapeResult.target.title || scrapeResult.target.url}</span>
-                </span>
-                <span className="text-[var(--muted)]">{scrapeResult.target.wordCount} words · {scrapeResult.target.entityCount} entities</span>
-              </div>
-              {scrapeResult.competitors.map((c, i) => (
-                <div key={i} className="flex items-center justify-between rounded-lg border border-slate-100 px-4 py-2">
-                  <span className="truncate font-medium text-[var(--foreground)]">{c.title || c.url}</span>
-                  <span className="shrink-0 text-[var(--muted)]">
-                    {c.fetchError ? <span className="text-[var(--red)]">{c.fetchError}</span> : `${c.wordCount} words · ${c.entityCount} entities`}
-                  </span>
-                </div>
-              ))}
+      <Card title="Paste content">
+        <form onSubmit={handleRun} className="space-y-5">
+          <ContentPasteArea id="target" label="Target page" placeholder="Paste your page content here…"
+            value={target} onChange={setTarget} disabled={running} />
+          <div className="border-t border-[var(--border)] pt-4">
+            <p className="mb-3 text-xs font-semibold uppercase tracking-wide text-[var(--muted)]">Competitor content (at least 1, up to 3)</p>
+            <div className="space-y-4">
+              <ContentPasteArea id="comp1" label="Competitor 1" placeholder="Paste competitor 1 content…" value={comp1} onChange={setComp1} disabled={running} />
+              <ContentPasteArea id="comp2" label="Competitor 2 (optional)" placeholder="Paste competitor 2 content…" value={comp2} onChange={setComp2} disabled={running} />
+              <ContentPasteArea id="comp3" label="Competitor 3 (optional)" placeholder="Paste competitor 3 content…" value={comp3} onChange={setComp3} disabled={running} />
             </div>
-          </Card>
-
-          <button
-            onClick={handleOptimize}
-            disabled={optimizeRunning}
-            className="w-full rounded-lg bg-[var(--accent)] py-2.5 text-sm font-medium text-white transition hover:bg-blue-700 disabled:opacity-50"
-          >
-            {optimizeRunning ? "Optimizing..." : optimizeResult ? "↻ Regenerate optimization" : "Step 2: Run gap analysis + rewrite suggestions"}
-          </button>
-
-          <StepStatus steps={optimizeSteps} running={optimizeRunning} />
-          {optimizeError && <ErrorBox message={optimizeError} />}
-        </>
-      )}
+          </div>
+          <div className="flex items-center justify-between pt-1">
+            <p className="text-xs text-[var(--muted)]">
+              Target: {targetWc} words · {competitors.length} competitor{competitors.length !== 1 ? "s" : ""} ready
+            </p>
+            <div className="flex gap-2">
+              {running && (
+                <button type="button" onClick={handleStop}
+                  className="rounded-lg border border-red-200 bg-[var(--red-soft)] px-4 py-2 text-sm font-medium text-[var(--red)]">
+                  Stop
+                </button>
+              )}
+              <button type="submit" disabled={!canRun || running}
+                className="rounded-lg bg-[var(--accent)] px-6 py-2 text-sm font-medium text-white transition hover:bg-blue-700 disabled:opacity-50">
+                {running ? "Analyzing…" : "Run Gap Analysis"}
+              </button>
+            </div>
+          </div>
+        </form>
+        <StepStatus steps={steps} running={running} />
+        {error && <ErrorBox message={error} />}
+      </Card>
 
       {optimizeResult && (
         <>
@@ -976,21 +903,14 @@ function OptimizationTab() {
               <ScoreCompare label="Average similarity" before={optimizeResult.optimization.overallCurrentSimilarity} after={optimizeResult.optimization.overallProjectedSimilarity} />
             </div>
             {optimizeResult.optimization.projectedScoreUnavailableReason && (
-              <p className="mt-3 text-sm text-[var(--gold)]">
-                Projected score unavailable: {optimizeResult.optimization.projectedScoreUnavailableReason}
-              </p>
+              <p className="mt-3 text-sm text-[var(--gold)]">Projected score unavailable: {optimizeResult.optimization.projectedScoreUnavailableReason}</p>
             )}
           </Card>
 
-          <Card
-            title="Gap Report"
-            subtitle={`${optimizeResult.gapReport.missingEntities.length} missing entities · ${optimizeResult.gapReport.semanticCoverage.uncoveredPassages.length} uncovered passages`}
-          >
+          <Card title="Gap Report" subtitle={`${optimizeResult.gapReport.missingEntities.length} missing entities · ${optimizeResult.gapReport.semanticCoverage.uncoveredPassages.length} uncovered passages`}>
             <div className="space-y-4">
               <div>
-                <p className="mb-1.5 text-xs font-medium uppercase tracking-wide text-[var(--muted)]">
-                  Missing entities (top {Math.min(20, optimizeResult.gapReport.missingEntities.length)})
-                </p>
+                <p className="mb-1.5 text-xs font-medium uppercase tracking-wide text-[var(--muted)]">Missing entities (top {Math.min(20, optimizeResult.gapReport.missingEntities.length)})</p>
                 <div className="flex flex-wrap gap-1.5">
                   {optimizeResult.gapReport.missingEntities.slice(0, 20).map((e, i) => (
                     <Badge key={i} tone="red"><span title={`appears in ${e.appearsInCompetitors} competitor page(s)`}>{e.name}</span></Badge>
@@ -998,9 +918,7 @@ function OptimizationTab() {
                 </div>
               </div>
               <div>
-                <p className="mb-1.5 text-xs font-medium uppercase tracking-wide text-[var(--muted)]">
-                  Uncovered passages (top {Math.min(5, optimizeResult.gapReport.semanticCoverage.uncoveredPassages.length)})
-                </p>
+                <p className="mb-1.5 text-xs font-medium uppercase tracking-wide text-[var(--muted)]">Uncovered passages (top {Math.min(5, optimizeResult.gapReport.semanticCoverage.uncoveredPassages.length)})</p>
                 <div className="space-y-2">
                   {optimizeResult.gapReport.semanticCoverage.uncoveredPassages.slice(0, 5).map((p, i) => (
                     <p key={i} className="rounded-lg bg-slate-50 p-3 text-sm text-slate-600">{p.competitorChunk}</p>
@@ -1010,10 +928,7 @@ function OptimizationTab() {
             </div>
           </Card>
 
-          <Card
-            title="Section-by-Section Optimization"
-            subtitle={`${optimizeResult.optimization.sections.length} sections proposed across ${optimizeResult.optimization.sectionsFound} real page sections found.`}
-          >
+          <Card title="Section-by-Section Optimization" subtitle={`${optimizeResult.optimization.sections.length} sections proposed`}>
             <div className="space-y-2">
               {optimizeResult.optimization.sections.map((s, i) => <SectionCard key={i} section={s} />)}
               {optimizeResult.optimization.sections.length === 0 && (
@@ -1022,10 +937,8 @@ function OptimizationTab() {
             </div>
           </Card>
 
-          <button
-            onClick={handleExport}
-            className="w-full rounded-lg border border-[var(--border)] bg-white py-2.5 text-sm font-medium text-[var(--foreground)] transition hover:bg-slate-50"
-          >
+          <button onClick={handleExport}
+            className="w-full rounded-lg border border-[var(--border)] bg-white py-2.5 text-sm font-medium text-[var(--foreground)] transition hover:bg-slate-50">
             Export optimization plan (.xlsx)
           </button>
         </>
@@ -1087,6 +1000,70 @@ function SentimentBar({ score }: { score: number }) {
           backgroundColor: color,
         }}
       />
+    </div>
+  );
+}
+
+function EntityTabsModule({ entities }: { entities: AnalyzedEntity[] }) {
+  const [activeType, setActiveType] = useState<string>("ALL");
+  const types = ["ALL", ...Array.from(new Set(entities.map((e) => e.type))).sort()];
+  const filtered = activeType === "ALL" ? entities : entities.filter((e) => e.type === activeType);
+  const typeCount = (t: string) => t === "ALL" ? entities.length : entities.filter((e) => e.type === t).length;
+
+  return (
+    <div>
+      <div className="mb-3 flex flex-wrap gap-1.5">
+        {types.map((t) => (
+          <button key={t} onClick={() => setActiveType(t)}
+            className={`rounded-full px-3 py-1 text-xs font-medium transition-colors ${
+              activeType === t ? "bg-[var(--accent)] text-white" : "bg-slate-100 text-[var(--muted)] hover:bg-slate-200 hover:text-[var(--foreground)]"
+            }`}>
+            {t} <span className="opacity-70">({typeCount(t)})</span>
+          </button>
+        ))}
+      </div>
+      <div className="max-h-96 overflow-y-auto rounded border border-[var(--border)]">
+        <table className="w-full text-left text-sm">
+          <thead className="sticky top-0 bg-white z-10">
+            <tr className="border-b border-[var(--border)] text-xs uppercase tracking-wide text-[var(--muted)]">
+              <th className="px-3 py-2">Entity</th>
+              <th className="px-3 py-2">Type</th>
+              <th className="px-3 py-2 w-32">Salience</th>
+              <th className="px-3 py-2">Mentions</th>
+              <th className="px-3 py-2">Sentiment</th>
+            </tr>
+          </thead>
+          <tbody>
+            {filtered.map((e, i) => (
+              <tr key={i} className="border-b border-slate-100 hover:bg-slate-50">
+                <td className="px-3 py-2 font-medium text-[var(--foreground)]">
+                  {e.wikipediaUrl ? (
+                    <a href={e.wikipediaUrl} target="_blank" rel="noopener noreferrer"
+                      className="underline decoration-dotted hover:text-[var(--accent)]">{e.name}</a>
+                  ) : e.name}
+                </td>
+                <td className="px-3 py-2"><Badge tone={entityTypeTone(e.type)}>{e.type}</Badge></td>
+                <td className="px-3 py-2">
+                  <div className="flex items-center gap-2">
+                    <div className="h-1.5 w-20 overflow-hidden rounded-full bg-slate-100">
+                      <div className="h-full rounded-full bg-[var(--accent)]" style={{ width: `${Math.min(100, e.salience * 100)}%` }} />
+                    </div>
+                    <span className="text-xs tabular-nums text-[var(--muted)]">{e.salience.toFixed(3)}</span>
+                  </div>
+                </td>
+                <td className="px-3 py-2 text-[var(--muted)]">{e.mentions}</td>
+                <td className="px-3 py-2">
+                  {e.sentimentScore !== null ? (
+                    <span className={`text-xs font-medium ${e.sentimentScore >= 0.15 ? "text-[var(--green)]" : e.sentimentScore <= -0.15 ? "text-[var(--red)]" : "text-[var(--muted)]"}`}>
+                      {e.sentimentScore >= 0.15 ? "+" : e.sentimentScore <= -0.15 ? "−" : ""}{e.sentimentScore.toFixed(2)}
+                    </span>
+                  ) : <span className="text-xs text-slate-300">—</span>}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
     </div>
   );
 }
@@ -1295,73 +1272,8 @@ function EntityAnalyzerTab() {
             </Card>
           )}
 
-          <Card title="Entities" subtitle={`${result.entityCount} entities ranked by salience (how central each is to the text)`}>
-            <div className="overflow-x-auto">
-              <table className="w-full text-left text-sm">
-                <thead>
-                  <tr className="border-b border-[var(--border)] text-xs uppercase tracking-wide text-[var(--muted)]">
-                    <th className="py-2 pr-3">Entity</th>
-                    <th className="py-2 pr-3">Type</th>
-                    <th className="py-2 pr-3 w-32">Salience</th>
-                    <th className="py-2 pr-3">Mentions</th>
-                    <th className="py-2">Sentiment</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {result.entities.map((e, i) => (
-                    <tr key={i} className="border-b border-slate-100">
-                      <td className="py-2 pr-3 font-medium text-[var(--foreground)]">
-                        {e.wikipediaUrl ? (
-                          <a href={e.wikipediaUrl} target="_blank" rel="noopener noreferrer"
-                            className="underline decoration-dotted hover:text-[var(--accent)]">
-                            {e.name}
-                          </a>
-                        ) : e.name}
-                      </td>
-                      <td className="py-2 pr-3">
-                        <Badge tone={entityTypeTone(e.type)}>{e.type}</Badge>
-                      </td>
-                      <td className="py-2 pr-3">
-                        <div className="flex items-center gap-2">
-                          <div className="h-1.5 w-20 overflow-hidden rounded-full bg-slate-100">
-                            <div
-                              className="h-full rounded-full bg-[var(--accent)]"
-                              style={{ width: `${Math.min(100, e.salience * 100)}%` }}
-                            />
-                          </div>
-                          <span className="text-xs tabular-nums text-[var(--muted)]">
-                            {e.salience.toFixed(3)}
-                          </span>
-                        </div>
-                      </td>
-                      <td className="py-2 pr-3 text-[var(--muted)]">{e.mentions}</td>
-                      <td className="py-2">
-                        {e.sentimentScore !== null ? (
-                          <span
-                            className={`text-xs font-medium ${
-                              e.sentimentScore >= 0.15
-                                ? "text-[var(--green)]"
-                                : e.sentimentScore <= -0.15
-                                ? "text-[var(--red)]"
-                                : "text-[var(--muted)]"
-                            }`}
-                          >
-                            {e.sentimentScore >= 0.15
-                              ? "+"
-                              : e.sentimentScore <= -0.15
-                              ? "−"
-                              : ""}
-                            {e.sentimentScore.toFixed(2)}
-                          </span>
-                        ) : (
-                          <span className="text-xs text-slate-300">—</span>
-                        )}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
+          <Card title="Entities" subtitle={`${result.entityCount} entities — browse by type using the tabs below`}>
+            <EntityTabsModule entities={result.entities} />
           </Card>
 
           <div className="grid gap-4 sm:grid-cols-2">
@@ -1703,24 +1615,10 @@ type UrlResult = {
 };
 type QueryCoverage = { query: string; isSeed: boolean; coverCount: number; totalUrls: number };
 type PageRelevanceResult = {
-  seed: string; queries: string[]; region: string;
-  urls: UrlResult[]; queryCoverage: QueryCoverage[];
+  queries: string[];
+  urls: UrlResult[];
+  queryCoverage: QueryCoverage[];
 };
-
-const REGIONS = [
-  { code: "us", label: "United States" },
-  { code: "ca", label: "Canada" },
-  { code: "gb", label: "United Kingdom" },
-  { code: "au", label: "Australia" },
-  { code: "nz", label: "New Zealand" },
-  { code: "ie", label: "Ireland" },
-  { code: "de", label: "Germany" },
-  { code: "fr", label: "France" },
-  { code: "in", label: "India" },
-  { code: "sg", label: "Singapore" },
-];
-
-const TOP_N_OPTIONS = [3, 5, 10, 15];
 
 function scoreStyle(score: number): { backgroundColor: string; color: string; fontWeight: string } {
   if (score >= 73) return { backgroundColor: "#1d4ed8", color: "white", fontWeight: "700" };
@@ -1848,10 +1746,9 @@ function ChunkDrilldown({
 function PageRelevanceTab() {
   const { run } = useSSE();
 
-  const [seed, setSeed] = useState("");
-  const [region, setRegion] = useState("us");
-  const [topN, setTopN] = useState(3);
-  const [fanoutEnabled, setFanoutEnabled] = useState(true);
+  const [urlsText, setUrlsText] = useState("");
+  const [queriesText, setQueriesText] = useState("");
+  const [fanoutEnabled, setFanoutEnabled] = useState(false);
   const [fanoutCount, setFanoutCount] = useState(5);
 
   const [running, setRunning] = useState(false);
@@ -1862,9 +1759,13 @@ function PageRelevanceTab() {
 
   const abortRef = useRef<AbortController | null>(null);
 
+  const urlList = urlsText.split(/\n/).map((s) => s.trim()).filter(Boolean);
+  const queryList = queriesText.split(/\n/).map((s) => s.trim()).filter(Boolean);
+  const canRun = urlList.length >= 1 && queryList.length >= 1 && urlList.length <= 10 && queryList.length <= 10;
+
   async function handleRun(e: React.FormEvent) {
     e.preventDefault();
-    if (!seed.trim() || running) return;
+    if (!canRun || running) return;
 
     setRunning(true);
     setSteps([]);
@@ -1878,7 +1779,7 @@ function PageRelevanceTab() {
     try {
       const data = (await run(
         "/api/page-relevance",
-        { seed: seed.trim(), region, topN, fanoutCount: fanoutEnabled ? fanoutCount : 0 },
+        { urls: urlList, queries: queryList, fanoutCount: fanoutEnabled ? fanoutCount : 0 },
         (step) => setSteps((s) => [...s, step]),
         controller.signal
       )) as PageRelevanceResult;
@@ -1899,12 +1800,12 @@ function PageRelevanceTab() {
   function handleExportCsv() {
     if (!result) return;
     const rows: (string | number)[][] = [
-      ["Rank", "URL", "Title", "Chunks", ...result.queries.map((q, i) => i === 0 ? `SEED: ${q}` : q)],
+      ["Rank", "URL", "Title", "Chunks", ...result.queries.map((q, i) => i < queryList.length ? `USER: ${q}` : q)],
     ];
     for (const u of result.urls) {
       rows.push([u.rank, u.url, u.title, u.chunkCount, ...u.bestScores]);
     }
-    downloadCsv(`page-relevance-${result.seed.replace(/[^a-z0-9]/gi, "-")}.csv`, rows);
+    downloadCsv(`page-relevance-${Date.now()}.csv`, rows);
   }
 
   return (
@@ -1912,116 +1813,89 @@ function PageRelevanceTab() {
       <div>
         <h1 className="text-2xl font-bold text-[var(--foreground)]">Page Relevance Analyzer</h1>
         <p className="mt-1 text-sm text-[var(--muted)]">
-          Crawl a URL, chunk its content, and compute embedding similarity between each chunk and your target (or AI fan-out) keywords.
+          Enter URLs and target queries manually. Vertex AI embeds each page&apos;s content chunks and computes cosine similarity against your queries.
         </p>
       </div>
 
       <Card title="">
         <form onSubmit={handleRun} className="space-y-5">
-          <div className="grid gap-4 sm:grid-cols-2">
+          <div className="grid gap-5 sm:grid-cols-2">
             <div>
-              <label htmlFor="pr-seed" className="mb-1.5 block text-sm font-semibold text-[var(--foreground)]">
-                Seed query
+              <label htmlFor="pr-urls" className="mb-1.5 block text-sm font-semibold text-[var(--foreground)]">
+                URLs to analyze <span className="font-normal text-[var(--muted)]">(one per line, up to 10)</span>
               </label>
-              <input
-                id="pr-seed"
-                type="text"
-                value={seed}
-                onChange={(e) => setSeed(e.target.value)}
-                placeholder="car accident lawyer toronto"
+              <textarea
+                id="pr-urls"
+                rows={6}
+                value={urlsText}
+                onChange={(e) => setUrlsText(e.target.value)}
+                placeholder={"https://example.com/page-1\nhttps://competitor.com/article"}
                 disabled={running}
-                className="w-full rounded-lg border border-[var(--border)] bg-slate-50 px-3 py-2.5 text-sm text-[var(--foreground)] outline-none focus:border-[var(--accent)] focus:ring-2 focus:ring-[var(--accent-soft)] disabled:opacity-50"
+                className="w-full resize-y rounded-lg border border-[var(--border)] bg-slate-50 px-3 py-2.5 text-sm font-mono text-[var(--foreground)] outline-none focus:border-[var(--accent)] focus:ring-2 focus:ring-[var(--accent-soft)] disabled:opacity-50"
               />
+              <p className="mt-1 text-xs text-[var(--muted)]">
+                {urlList.length > 0 ? `${urlList.length} URL(s) entered` : "No URLs yet"}
+                {urlList.length > 10 && <span className="ml-1 text-[var(--red)]">— max 10</span>}
+              </p>
             </div>
             <div>
-              <label htmlFor="pr-region" className="mb-1.5 block text-sm font-semibold text-[var(--foreground)]">
-                Region
+              <label htmlFor="pr-queries" className="mb-1.5 block text-sm font-semibold text-[var(--foreground)]">
+                Target queries <span className="font-normal text-[var(--muted)]">(one per line, up to 10)</span>
               </label>
-              <select
-                id="pr-region"
-                value={region}
-                onChange={(e) => setRegion(e.target.value)}
+              <textarea
+                id="pr-queries"
+                rows={6}
+                value={queriesText}
+                onChange={(e) => setQueriesText(e.target.value)}
+                placeholder={"car accident lawyer toronto\nbest personal injury lawyer\nhow to file a claim"}
                 disabled={running}
-                className="w-full rounded-lg border border-[var(--border)] bg-white px-3 py-2.5 text-sm text-[var(--foreground)] outline-none focus:border-[var(--accent)] disabled:opacity-50"
-              >
-                {REGIONS.map((r) => (
-                  <option key={r.code} value={r.code}>{r.label}</option>
-                ))}
-              </select>
+                className="w-full resize-y rounded-lg border border-[var(--border)] bg-slate-50 px-3 py-2.5 text-sm font-mono text-[var(--foreground)] outline-none focus:border-[var(--accent)] focus:ring-2 focus:ring-[var(--accent-soft)] disabled:opacity-50"
+              />
+              <p className="mt-1 text-xs text-[var(--muted)]">
+                {queryList.length > 0 ? `${queryList.length} quer${queryList.length !== 1 ? "ies" : "y"} entered` : "No queries yet"}
+                {queryList.length > 10 && <span className="ml-1 text-[var(--red)]">— max 10</span>}
+              </p>
             </div>
           </div>
 
-          <div className="grid gap-4 sm:grid-cols-2">
-            <div>
-              <div className="mb-3 flex items-center justify-between">
-                <label className="text-sm font-semibold text-[var(--foreground)]">
-                  Expand seed with AI fan-out
-                </label>
-                <button
-                  type="button"
-                  onClick={() => setFanoutEnabled((v) => !v)}
-                  className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors ${
-                    fanoutEnabled ? "bg-[var(--accent)]" : "bg-slate-200"
-                  }`}
-                >
-                  <span className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition-transform ${fanoutEnabled ? "translate-x-5" : "translate-x-0"}`} />
-                </button>
+          <div className="rounded-lg border border-[var(--border)] bg-slate-50 p-4">
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-sm font-semibold text-[var(--foreground)]">AI fan-out (optional)</p>
+                <p className="text-xs text-[var(--muted)]">Gemini generates additional related queries from your first query</p>
               </div>
-              {fanoutEnabled && (
-                <div>
-                  <div className="mb-1.5 flex justify-between text-xs text-[var(--muted)]">
-                    <span>Number of fan-out queries</span>
-                    <span className="font-medium tabular-nums">{fanoutCount}</span>
-                  </div>
-                  <input
-                    type="range" min={1} max={14} value={fanoutCount}
-                    onChange={(e) => setFanoutCount(Number(e.target.value))}
-                    disabled={running}
-                    className="w-full accent-[var(--accent)]"
-                  />
-                </div>
-              )}
-            </div>
-
-            <div>
-              <label htmlFor="pr-topn" className="mb-1.5 block text-sm font-semibold text-[var(--foreground)]">
-                Top URLs to analyze
-              </label>
-              <select
-                id="pr-topn"
-                value={topN}
-                onChange={(e) => setTopN(Number(e.target.value))}
-                disabled={running}
-                className="w-full rounded-lg border border-[var(--accent)] bg-white px-3 py-2.5 text-sm text-[var(--foreground)] outline-none focus:border-[var(--accent)] disabled:opacity-50"
-              >
-                {TOP_N_OPTIONS.map((n) => (
-                  <option key={n} value={n}>{n} URLs</option>
-                ))}
-              </select>
-              <p className="mt-1 text-xs text-[var(--muted)]">Free plan caps at 5 URLs per run.</p>
-            </div>
-          </div>
-
-          <div className="flex items-center justify-between pt-1">
-            <p className="text-xs text-[var(--muted)]">0 free runs left</p>
-            <div className="flex gap-2">
-              {running && (
-                <button type="button" onClick={handleStop}
-                  className="rounded-lg border border-red-200 bg-[var(--red-soft)] px-4 py-2 text-sm font-medium text-[var(--red)]">
-                  Stop
-                </button>
-              )}
               <button
-                type="submit"
-                disabled={running || !seed.trim()}
-                className="flex items-center gap-2 rounded-lg bg-[var(--accent)] px-5 py-2 text-sm font-medium text-white transition hover:bg-blue-700 disabled:opacity-50"
+                type="button"
+                onClick={() => setFanoutEnabled((v) => !v)}
+                className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors ${fanoutEnabled ? "bg-[var(--accent)]" : "bg-slate-200"}`}
               >
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
-                  <polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2" />
-                </svg>
-                {running ? "Analyzing…" : "Analyze SERP"}
+                <span className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition-transform ${fanoutEnabled ? "translate-x-5" : "translate-x-0"}`} />
               </button>
             </div>
+            {fanoutEnabled && (
+              <div className="mt-3">
+                <div className="mb-1.5 flex justify-between text-xs text-[var(--muted)]">
+                  <span>Fan-out count</span>
+                  <span className="font-medium tabular-nums">{fanoutCount}</span>
+                </div>
+                <input type="range" min={1} max={14} value={fanoutCount}
+                  onChange={(e) => setFanoutCount(Number(e.target.value))}
+                  disabled={running} className="w-full accent-[var(--accent)]" />
+              </div>
+            )}
+          </div>
+
+          <div className="flex items-center justify-end gap-2 pt-1">
+            {running && (
+              <button type="button" onClick={handleStop}
+                className="rounded-lg border border-red-200 bg-[var(--red-soft)] px-4 py-2 text-sm font-medium text-[var(--red)]">
+                Stop
+              </button>
+            )}
+            <button type="submit" disabled={!canRun || running}
+              className="flex items-center gap-2 rounded-lg bg-[var(--accent)] px-5 py-2 text-sm font-medium text-white transition hover:bg-blue-700 disabled:opacity-50">
+              {running ? "Analyzing…" : "Analyze URLs"}
+            </button>
           </div>
         </form>
 

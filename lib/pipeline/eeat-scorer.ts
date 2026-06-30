@@ -97,10 +97,12 @@ export async function runEEATScorer(
 
   const prompt = `You are a senior content quality evaluator applying Google's E-E-A-T framework (Experience, Expertise, Authoritativeness, Trustworthiness).
 
-Evaluate the following content against each criterion below. Score each criterion:
-- 0 = Not Present
-- 1 = Partial (some evidence but incomplete)
-- 2 = Strong (clear, convincing evidence)
+Evaluate the following content against each criterion below.
+
+Scoring scale (MUST be an integer — 0, 1, or 2 only):
+  0 = Not Present
+  1 = Partial (some evidence but incomplete)
+  2 = Strong (clear, convincing evidence)
 ${contextBlock}
 --- CONTENT START ---
 ${content.slice(0, 12000)}
@@ -109,15 +111,19 @@ ${content.slice(0, 12000)}
 Criteria to evaluate:
 ${criteriaBlock}
 
-Return ONLY valid JSON (no markdown, no code fences):
+Return ONLY valid JSON (no markdown, no explanation, no code fences).
+Each "score" value MUST be the integer 0, 1, or 2 — never write "0|1|2".
 {
   "experience": [
-    { "criterion": "Author has first-hand experience with the topic", "score": 0|1|2, "reason": "one concise sentence" },
-    ...5 items
+    { "criterion": "Author has first-hand experience with the topic", "score": 1, "reason": "one concise sentence" },
+    { "criterion": "Includes personal anecdotes or real-world stories", "score": 0, "reason": "one concise sentence" },
+    { "criterion": "Shows practical examples from actual use", "score": 2, "reason": "one concise sentence" },
+    { "criterion": "Demonstrates real results or outcomes", "score": 1, "reason": "one concise sentence" },
+    { "criterion": "Contains original media (photos, screenshots, data)", "score": 0, "reason": "one concise sentence" }
   ],
-  "expertise": [ ...5 items ],
-  "authoritativeness": [ ...5 items ],
-  "trustworthiness": [ ...5 items ]
+  "expertise": [ ... 5 items with integer scores ... ],
+  "authoritativeness": [ ... 5 items with integer scores ... ],
+  "trustworthiness": [ ... 5 items with integer scores ... ]
 }
 
 Be direct and evidence-based. Reference specific content from the text when justifying scores.`;
