@@ -192,11 +192,15 @@ export async function getEmbeddings(
 
   const url = `https://${region}-aiplatform.googleapis.com/v1/projects/${projectId}/locations/${region}/publishers/google/models/${EMBEDDING_MODEL}:predict`;
 
-  // Larger batches mean fewer total requests against the per-minute quota.
-  // This model family's documented cap is around 250 instances/request;
-  // 40 stays comfortably under payload-size limits for paragraph-length
-  // chunks while meaningfully cutting request count vs. a smaller batch.
-  const BATCH_SIZE = 40;
+  // text-embedding-005 enforces a 20,000 total-token limit per request
+  // across all instances combined. Overlapping 500-token chunks at batch=40
+  // push that ceiling (40 × ~500 = 20,000+). Batch=20 keeps us at ~10,000
+  // tokens per request with comfortable headroom for longer chunks.
+  const BATCH_SIZE = 20;
+  // Truncate each input to 1,500 chars (~375 tokens) before sending.
+  // Semantic meaning is fully captured at this length; the extra words in
+  // longer chunks add noise rather than signal for embedding purposes.
+  const MAX_CHARS_PER_TEXT = 1500;
   // Google Cloud quotas of this kind are typically per-minute windows.
   // The previous retry budget (4 attempts, ~15s total) rarely outlasted
   // an exhausted per-minute window. This extends to 7 attempts with a
@@ -218,7 +222,7 @@ export async function getEmbeddings(
           method: "POST",
           data: {
             instances: batch.map((text) => ({
-              content: text,
+              content: text.slice(0, MAX_CHARS_PER_TEXT),
               task_type: EMBEDDING_DIMENSION_TASK_TYPE,
             })),
           },

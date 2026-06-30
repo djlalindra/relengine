@@ -151,7 +151,7 @@ Return ONLY valid JSON:
 {"groundedness": <integer 0-100>, "contextRelevance": <integer 0-100>, "notes": "<one sentence>"}`,
       },
     ],
-    { temperature: 0.2, maxTokens: 200, signal, jsonMode: true }
+    { temperature: 0.2, maxTokens: 1000, signal, jsonMode: true }
   );
 
   try {
