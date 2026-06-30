@@ -1056,7 +1056,7 @@ type EntityAnalyzerResult = {
   };
   categories: { name: string; confidence: number }[];
   aiBreakdown: string;
-  relatedKeywords: string[];
+  relatedKeywords: { keyword: string; similarity: number }[];
   wordCount: number;
   entityCount: number;
 };
@@ -1247,18 +1247,42 @@ function EntityAnalyzerTab() {
 
           {result.relatedKeywords.length > 0 && (
             <Card
-              title="Semantically Related Keywords"
-              subtitle={`${result.relatedKeywords.length} keywords derived from the entity and topic profile of this content`}
+              title="Top 30 Semantic Keywords"
+              subtitle={`Ranked by cosine similarity to your target term — higher score = closer semantic match`}
             >
-              <div className="flex flex-wrap gap-1.5">
-                {result.relatedKeywords.map((kw, i) => (
-                  <span
-                    key={i}
-                    className="rounded-full border border-[var(--border)] bg-slate-50 px-3 py-1 text-xs text-[var(--foreground)] hover:border-[var(--accent)] hover:bg-[var(--accent-soft)] hover:text-[var(--accent)] transition-colors cursor-default"
-                  >
-                    {kw}
-                  </span>
-                ))}
+              <div className="overflow-x-auto">
+                <table className="w-full text-left text-sm">
+                  <thead>
+                    <tr className="border-b border-[var(--border)] text-xs uppercase tracking-wide text-[var(--muted)]">
+                      <th className="py-2 pr-3 w-6">#</th>
+                      <th className="py-2 pr-4">Keyword</th>
+                      <th className="py-2 w-40">Similarity</th>
+                      <th className="py-2 w-12 text-right">Score</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {result.relatedKeywords.map((kw, i) => {
+                      const sim = kw.similarity;
+                      const barColor = sim >= 75 ? "var(--green)" : sim >= 60 ? "var(--accent)" : "var(--gold)";
+                      return (
+                        <tr key={i} className="border-b border-slate-100 hover:bg-slate-50">
+                          <td className="py-2 pr-3 text-xs text-[var(--muted)] tabular-nums">{i + 1}</td>
+                          <td className="py-2 pr-4 font-medium text-[var(--foreground)]">{kw.keyword}</td>
+                          <td className="py-2 pr-4">
+                            <div className="h-1.5 w-full overflow-hidden rounded-full bg-slate-100">
+                              <div className="h-full rounded-full transition-all"
+                                style={{ width: `${sim}%`, backgroundColor: barColor }} />
+                            </div>
+                          </td>
+                          <td className="py-2 text-right text-xs font-medium tabular-nums"
+                            style={{ color: barColor }}>
+                            {sim}%
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
               </div>
             </Card>
           )}

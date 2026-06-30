@@ -1,5 +1,6 @@
 import { LanguageServiceClient } from "@google-cloud/language";
 import { callModel } from "./model-client";
+import { getEmbeddings, cosineSimilarity } from "./embeddings-client";
 
 let clientInstance: LanguageServiceClient | null = null;
 
@@ -30,6 +31,11 @@ export type AnalyzedEntity = {
   wikipediaUrl?: string;
 };
 
+export type RelatedKeyword = {
+  keyword: string;
+  similarity: number; // 0–100, cosine similarity × 100
+};
+
 export type EntityAnalyzerResult = {
   entities: AnalyzedEntity[];
   documentSentiment: {
@@ -39,7 +45,7 @@ export type EntityAnalyzerResult = {
   };
   categories: { name: string; confidence: number }[];
   aiBreakdown: string;
-  relatedKeywords: string[];
+  relatedKeywords: RelatedKeyword[];
   wordCount: number;
   entityCount: number;
 };
@@ -150,36 +156,55 @@ Be direct. Reference actual entity names. No generic filler.`;
       [{ role: "user", content: aiPrompt }],
       { temperature: 0.45, maxTokens: 900, signal }
     ),
-    (async (): Promise<string[]> => {
-      const topEntityNames = entities.slice(0, 15).map((e) => e.name).join(", ");
-      const catLine = categories.length > 0 ? `\nContent category: ${categories[0].name}` : "";
-      const kwLine = keywords.trim() ? `\nTarget keywords: ${keywords}` : "";
+    (async (): Promise<RelatedKeyword[]> => {
+      const targetTerm = keywords.trim();
+      if (!targetTerm) return []; // cosine ranking requires a target term
 
-      const kwPrompt = `You are an SEO keyword researcher. Based on the following content signals, generate exactly 30 semantically related keywords useful for content strategy.${catLine}${kwLine}
-Top entities found in the content: ${topEntityNames}
+      const topEntityNames = entities.slice(0, 15).map((e) => e.name).join(", ");
+      const catLine = categories.length > 0 ? `Content category: ${categories[0].name}\n` : "";
+
+      // Step 1 — Gemini generates a broad candidate pool
+      const kwPrompt = `You are an SEO keyword researcher. Generate exactly 80 semantically related search keywords for the target term: "${targetTerm}"
+
+${catLine}Top entities found in the content: ${topEntityNames}
 
 Rules:
-- Mix of long-tail phrases, question-based queries, comparison terms, and subtopic variations
-- Each keyword should be a realistic search query (2-6 words)
+- Mix of long-tail phrases, question-based queries, comparison terms, subtopic variations, local modifiers
+- Realistic search queries (2–6 words each)
 - No duplicates or near-duplicates
-- No generic filler like "best practices" or "how to get started"
+- Vary intent: informational, commercial, navigational, transactional
 
-Return ONLY a JSON array of 30 keyword strings, no markdown, no explanation:
+Return ONLY a JSON array of 80 keyword strings, no markdown:
 ["keyword 1", "keyword 2", ...]`;
 
       try {
         const raw = await callModel(
           [{ role: "user", content: kwPrompt }],
-          { temperature: 0.7, maxTokens: 700, signal }
+          { temperature: 0.75, maxTokens: 1200, signal }
         );
         const s = raw.indexOf("["), e = raw.lastIndexOf("]");
         if (s === -1 || e === -1) return [];
         const arr = JSON.parse(raw.slice(s, e + 1));
-        if (Array.isArray(arr)) return arr.slice(0, 30).map(String);
+        if (!Array.isArray(arr) || arr.length === 0) return [];
+        const candidates: string[] = arr.slice(0, 80).map(String);
+
+        // Step 2 — embed target term + all candidates in one batch
+        const allTexts = [targetTerm, ...candidates];
+        const embeddings = await getEmbeddings(allTexts, (msg) => onProgress(msg));
+        const targetEmb = embeddings[0];
+        const candidateEmbs = embeddings.slice(1);
+
+        // Step 3 — rank by cosine similarity, return top 30
+        return candidates
+          .map((keyword, i) => ({
+            keyword,
+            similarity: Math.round(cosineSimilarity(targetEmb, candidateEmbs[i]) * 100),
+          }))
+          .sort((a, b) => b.similarity - a.similarity)
+          .slice(0, 30);
       } catch {
-        // non-fatal — return empty
+        return [];
       }
-      return [];
     })(),
   ]);
 
