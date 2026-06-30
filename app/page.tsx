@@ -1371,6 +1371,277 @@ function EntityAnalyzerTab() {
 }
 
 /* ---------------------------------------------------------------------- */
+/* Tab: E-E-A-T Score Calculator                                          */
+/* ---------------------------------------------------------------------- */
+
+type CriterionScore = 0 | 1 | 2;
+type CriterionResult = { criterion: string; score: CriterionScore; reason: string };
+type DimensionResult = { label: string; criteria: CriterionResult[]; points: number; percent: number };
+type EEATResult = { dimensions: DimensionResult[]; overallPercent: number; overallVerdict: string };
+
+const DIMENSION_COLORS: Record<string, "blue" | "purple" | "green" | "gold"> = {
+  Experience: "blue",
+  Expertise: "purple",
+  Authoritativeness: "green",
+  Trustworthiness: "gold",
+};
+
+const DIMENSION_HEX: Record<string, string> = {
+  Experience: "var(--accent)",
+  Expertise: "#8b5cf6",
+  Authoritativeness: "var(--green)",
+  Trustworthiness: "var(--gold)",
+};
+
+function scoreTone(pct: number): "green" | "gold" | "red" {
+  return pct >= 70 ? "green" : pct >= 40 ? "gold" : "red";
+}
+
+function scoreLabel(s: CriterionScore) {
+  if (s === 2) return { text: "Strong", tone: "green" as const };
+  if (s === 1) return { text: "Partial", tone: "gold" as const };
+  return { text: "Not Present", tone: "red" as const };
+}
+
+function EEATBarChart({ dimensions }: { dimensions: DimensionResult[] }) {
+  const barW = 80;
+  const gap = 40;
+  const chartH = 200;
+  const totalW = dimensions.length * (barW + gap) + gap;
+
+  return (
+    <svg viewBox={`0 0 ${totalW} ${chartH + 60}`} className="w-full max-w-lg mx-auto">
+      {dimensions.map((d, i) => {
+        const x = gap + i * (barW + gap);
+        const barH = (d.percent / 100) * chartH;
+        const y = chartH - barH;
+        const color = DIMENSION_HEX[d.label] ?? "var(--accent)";
+        const tone = scoreTone(d.percent);
+        const barColor = tone === "green" ? "var(--green)" : tone === "gold" ? "var(--gold)" : "var(--red)";
+
+        return (
+          <g key={i}>
+            <rect x={x} y={y} width={barW} height={barH}
+              fill={barColor} rx={6} opacity={0.85} />
+            <text x={x + barW / 2} y={y - 6}
+              textAnchor="middle" fontSize={12} fontWeight="600"
+              fill={barColor}>
+              {d.percent}%
+            </text>
+            <text x={x + barW / 2} y={chartH + 20}
+              textAnchor="middle" fontSize={11} fill="var(--foreground)">
+              {d.label}
+            </text>
+          </g>
+        );
+      })}
+      {/* baseline */}
+      <line x1={0} y1={chartH} x2={totalW} y2={chartH}
+        stroke="var(--border)" strokeWidth={1} />
+    </svg>
+  );
+}
+
+function EEATTab() {
+  const { run } = useSSE();
+
+  const [content, setContent] = useState("");
+  const [url, setUrl] = useState("");
+  const [author, setAuthor] = useState("");
+  const [domain, setDomain] = useState("");
+
+  const [running, setRunning] = useState(false);
+  const [steps, setSteps] = useState<string[]>([]);
+  const [error, setError] = useState("");
+  const [result, setResult] = useState<EEATResult | null>(null);
+
+  const abortRef = useRef<AbortController | null>(null);
+  const wordCount = content.trim() === "" ? 0 : content.trim().split(/\s+/).length;
+
+  async function handleRun(e: React.FormEvent) {
+    e.preventDefault();
+    if (wordCount < 20 || running) return;
+
+    setRunning(true);
+    setSteps([]);
+    setResult(null);
+    setError("");
+
+    const controller = new AbortController();
+    abortRef.current = controller;
+
+    try {
+      const data = (await run(
+        "/api/eeat-score",
+        { content: content.trim(), url: url.trim(), author: author.trim(), domain: domain.trim() },
+        (step) => setSteps((s) => [...s, step]),
+        controller.signal
+      )) as EEATResult;
+      setResult(data);
+    } catch (err) {
+      if (err instanceof Error && err.name !== "AbortError") setError(err.message);
+    } finally {
+      setRunning(false);
+    }
+  }
+
+  function handleStop() {
+    abortRef.current?.abort();
+    setRunning(false);
+    setSteps((s) => [...s, "Stopped by user."]);
+  }
+
+  const overallTone = result ? scoreTone(result.overallPercent) : "slate" as const;
+
+  return (
+    <div className="space-y-6">
+      <div>
+        <h1 className="text-2xl font-bold text-[var(--foreground)]">E-E-A-T Score Calculator</h1>
+        <p className="mt-1 text-sm text-[var(--muted)]">
+          Paste your content and let Gemini evaluate Experience, Expertise, Authoritativeness, and Trustworthiness across 20 criteria.
+        </p>
+      </div>
+
+      <Card title="Content to evaluate">
+        <form onSubmit={handleRun} className="space-y-4">
+          <div>
+            <textarea
+              value={content}
+              onChange={(e) => setContent(e.target.value)}
+              placeholder="Paste your article, landing page, or any content here…"
+              rows={8}
+              disabled={running}
+              className="w-full resize-y rounded-lg border border-[var(--border)] px-3 py-2 text-sm text-[var(--foreground)] outline-none focus:border-[var(--accent)] focus:ring-2 focus:ring-[var(--accent-soft)] disabled:opacity-50"
+            />
+            <p className={`mt-1 text-right text-xs tabular-nums font-medium ${wordCount > 0 && wordCount < 20 ? "text-[var(--red)]" : "text-[var(--muted)]"}`}>
+              {wordCount.toLocaleString()} words
+            </p>
+          </div>
+
+          <div className="grid gap-3 sm:grid-cols-3">
+            <div>
+              <label className="mb-1 block text-xs font-medium text-[var(--muted)]">
+                URL <span className="text-slate-400">(optional)</span>
+              </label>
+              <input type="text" value={url} onChange={(e) => setUrl(e.target.value)}
+                placeholder="https://yoursite.com/page"
+                disabled={running}
+                className="w-full rounded-lg border border-[var(--border)] px-3 py-2 text-sm text-[var(--foreground)] outline-none focus:border-[var(--accent)] focus:ring-2 focus:ring-[var(--accent-soft)] disabled:opacity-50" />
+            </div>
+            <div>
+              <label className="mb-1 block text-xs font-medium text-[var(--muted)]">
+                Author name <span className="text-slate-400">(optional)</span>
+              </label>
+              <input type="text" value={author} onChange={(e) => setAuthor(e.target.value)}
+                placeholder="Jane Smith, MD"
+                disabled={running}
+                className="w-full rounded-lg border border-[var(--border)] px-3 py-2 text-sm text-[var(--foreground)] outline-none focus:border-[var(--accent)] focus:ring-2 focus:ring-[var(--accent-soft)] disabled:opacity-50" />
+            </div>
+            <div>
+              <label className="mb-1 block text-xs font-medium text-[var(--muted)]">
+                Domain / site <span className="text-slate-400">(optional)</span>
+              </label>
+              <input type="text" value={domain} onChange={(e) => setDomain(e.target.value)}
+                placeholder="yoursite.com"
+                disabled={running}
+                className="w-full rounded-lg border border-[var(--border)] px-3 py-2 text-sm text-[var(--foreground)] outline-none focus:border-[var(--accent)] focus:ring-2 focus:ring-[var(--accent-soft)] disabled:opacity-50" />
+            </div>
+          </div>
+
+          <div className="flex items-center justify-end gap-2 pt-1">
+            {running && (
+              <button type="button" onClick={handleStop}
+                className="rounded-lg border border-red-200 bg-[var(--red-soft)] px-4 py-2 text-sm font-medium text-[var(--red)]">
+                Stop
+              </button>
+            )}
+            <button
+              type="submit"
+              disabled={running || wordCount < 20}
+              className="rounded-lg bg-[var(--accent)] px-5 py-2 text-sm font-medium text-white transition hover:bg-blue-700 disabled:opacity-50"
+            >
+              {running ? "Evaluating…" : "Calculate E-E-A-T Score"}
+            </button>
+          </div>
+        </form>
+
+        <StepStatus steps={steps} running={running} />
+        {error && <ErrorBox message={error} />}
+      </Card>
+
+      {result && (
+        <>
+          {/* Score cards */}
+          <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+            {result.dimensions.map((d) => (
+              <div key={d.label} className="rounded-xl border border-[var(--border)] bg-[var(--card)] px-5 py-4">
+                <p className="text-xs font-medium text-[var(--muted)]">{d.label}</p>
+                <p className={`mt-1 text-3xl font-bold ${
+                  scoreTone(d.percent) === "green"
+                    ? "text-[var(--green)]"
+                    : scoreTone(d.percent) === "gold"
+                    ? "text-[var(--gold)]"
+                    : "text-[var(--red)]"
+                }`}>
+                  {d.points}/10
+                </p>
+                <p className="mt-0.5 text-xs text-[var(--muted)]">{d.percent}%</p>
+              </div>
+            ))}
+          </div>
+
+          {/* Overall score */}
+          <div className="flex items-center justify-between rounded-xl border border-[var(--border)] bg-[var(--card)] px-6 py-4">
+            <div>
+              <p className="text-sm font-semibold text-[var(--foreground)]">Overall E-E-A-T Score</p>
+              <p className="mt-1 text-sm text-[var(--muted)]">{result.overallVerdict}</p>
+            </div>
+            <p className={`text-4xl font-bold tabular-nums ${
+              overallTone === "green"
+                ? "text-[var(--green)]"
+                : overallTone === "gold"
+                ? "text-[var(--gold)]"
+                : "text-[var(--red)]"
+            }`}>
+              {result.overallPercent}%
+            </p>
+          </div>
+
+          {/* Bar chart */}
+          <Card title="Score by Dimension">
+            <EEATBarChart dimensions={result.dimensions} />
+          </Card>
+
+          {/* Criterion breakdown */}
+          {result.dimensions.map((d) => (
+            <Card
+              key={d.label}
+              title={d.label}
+              subtitle={`${d.points}/10 · ${d.percent}%`}
+            >
+              <div className="space-y-3">
+                {d.criteria.map((c, i) => {
+                  const { text, tone } = scoreLabel(c.score);
+                  return (
+                    <div key={i} className="flex items-start gap-3 rounded-lg border border-[var(--border)] px-4 py-3">
+                      <Badge tone={tone}>{text}</Badge>
+                      <div className="flex-1 min-w-0">
+                        <p className="text-sm font-medium text-[var(--foreground)]">{c.criterion}</p>
+                        <p className="mt-0.5 text-xs text-[var(--muted)] leading-relaxed">{c.reason}</p>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </Card>
+          ))}
+        </>
+      )}
+    </div>
+  );
+}
+
+/* ---------------------------------------------------------------------- */
 /* Tab: Page Relevance Analyzer                                            */
 /* ---------------------------------------------------------------------- */
 
@@ -2220,7 +2491,7 @@ function FanOutTab() {
 /* Top-level: tab bar + header                                             */
 /* ---------------------------------------------------------------------- */
 
-type Tab = "entityanalyzer" | "pagerelevance" | "fanout" | "entity" | "optimize";
+type Tab = "entityanalyzer" | "eeat" | "pagerelevance" | "fanout" | "entity" | "optimize";
 
 const TOOLKIT_TABS: { id: Tab; label: string; icon: React.ReactNode }[] = [
   {
@@ -2238,6 +2509,15 @@ const TOOLKIT_TABS: { id: Tab; label: string; icon: React.ReactNode }[] = [
     icon: (
       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
         <circle cx="18" cy="5" r="3" /><circle cx="6" cy="12" r="3" /><circle cx="18" cy="19" r="3" /><line x1="8.59" y1="13.51" x2="15.42" y2="17.49" /><line x1="15.41" y1="6.51" x2="8.59" y2="10.49" />
+      </svg>
+    ),
+  },
+  {
+    id: "eeat",
+    label: "E-E-A-T Score",
+    icon: (
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+        <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
       </svg>
     ),
   },
@@ -2323,6 +2603,7 @@ export default function Home() {
 
       <main className="mx-auto max-w-5xl px-6 py-10">
         {activeTab === "entityanalyzer" && <EntityAnalyzerTab />}
+        {activeTab === "eeat" && <EEATTab />}
         {activeTab === "pagerelevance" && <PageRelevanceTab />}
         {activeTab === "fanout" && <FanOutTab />}
         {activeTab === "entity" && <EntityAnalysisTab />}
