@@ -32,9 +32,13 @@ function historyPayloadToCsv(tool: HistoryTool, payload: Record<string, unknown>
 
   if (tool === "page-relevance") {
     const p = payload as PageRelevanceResult;
-    lines.push(row(["Rank", "URL", "Title", "Chunks", "Rank Score", ...(p.queries ?? []).map((q, i) => i === 0 ? `SEED: ${q}` : q)]));
-    for (const u of p.urls ?? []) {
-      lines.push(row([u.rank, u.url, u.title, u.chunkCount, u.topRankScore?.toFixed(3) ?? "", ...u.bestScores]));
+    const qHeaders = (p.queries ?? []).map((q: string, i: number) => i === 0 ? `SEED: ${q}` : q);
+    lines.push(row(["Rank", "URL", "Title", "Row Type", "Chunk #", "Chunk Text", "Rank Score", ...qHeaders]));
+    for (const u of (p.urls ?? []) as UrlResult[]) {
+      lines.push(row([u.rank, u.url, u.title, "URL Summary", "", u.fetchError ?? `${u.chunkCount} chunks`, u.topRankScore?.toFixed(3) ?? "", ...u.bestScores]));
+      for (const c of u.chunks ?? []) {
+        lines.push(row(["", "", "", "Chunk", c.index, c.text, c.rankScore?.toFixed(3) ?? "", ...c.scores]));
+      }
     }
   } else if (tool === "eeat") {
     const p = payload as { dimensions?: { label: string; criteria: { criterion: string; score: number; reason: string }[]; percent: number }[]; overallPercent?: number };
@@ -1908,7 +1912,7 @@ function ChunkDrilldown({
   );
 }
 
-const TOP_N_OPTIONS = [3, 5, 7, 10];
+const MAX_URLS_OPTIONS = [3, 5, 7, 10, 15];
 
 function PageRelevanceTab() {
   const { run } = useSSE();
@@ -1917,7 +1921,7 @@ function PageRelevanceTab() {
   const [city, setCity] = useState("");
   const [fanoutEnabled, setFanoutEnabled] = useState(true);
   const [fanoutCount, setFanoutCount] = useState(5);
-  const [topNPerQuery, setTopNPerQuery] = useState(3);
+  const [maxUrls, setMaxUrls] = useState(5);
 
   const [running, setRunning] = useState(false);
   const [steps, setSteps] = useState<string[]>([]);
@@ -1949,7 +1953,7 @@ function PageRelevanceTab() {
           seedQuery: seedQuery.trim(),
           city: city.trim(),
           fanoutCount: fanoutEnabled ? fanoutCount : 0,
-          topNPerQuery,
+          maxUrls,
         },
         (step) => setSteps((s) => [...s, step]),
         controller.signal
@@ -1976,13 +1980,29 @@ function PageRelevanceTab() {
 
   function handleExportCsv() {
     if (!result) return;
+    const queryHeaders = result.queries.map((q, i) => i === 0 ? `SEED: ${q}` : q);
     const rows: (string | number)[][] = [
-      ["Rank", "URL", "Title", "Chunks", "Rank Score", ...result.queries.map((q, i) => i === 0 ? `SEED: ${q}` : q)],
+      ["Rank", "URL", "Title", "Row Type", "Chunk #", "Chunk Text", "Rank Score", ...queryHeaders],
     ];
     for (const u of result.urls) {
-      rows.push([u.rank, u.url, u.title, u.chunkCount, u.topRankScore?.toFixed(3) ?? "", ...u.bestScores]);
+      // URL summary row
+      rows.push([
+        u.rank, u.url, u.title, "URL Summary", "",
+        u.fetchError ?? `${u.chunkCount} chunks`,
+        u.topRankScore?.toFixed(3) ?? "",
+        ...u.bestScores,
+      ]);
+      // One row per chunk
+      for (const c of u.chunks) {
+        rows.push([
+          "", "", "", "Chunk", c.index,
+          c.text,
+          c.rankScore?.toFixed(3) ?? "",
+          ...c.scores,
+        ]);
+      }
     }
-    downloadCsv(`page-relevance-${Date.now()}.csv`, rows);
+    downloadCsv(`page-relevance-${result.seedQuery.replace(/[^a-z0-9]/gi, "-")}.csv`, rows);
   }
 
   return (
@@ -2031,17 +2051,17 @@ function PageRelevanceTab() {
             </div>
             <div>
               <label htmlFor="pr-topn" className="mb-1.5 block text-sm font-semibold text-[var(--foreground)]">
-                Top URLs per query
+                Top URLs to analyze
               </label>
               <select
                 id="pr-topn"
-                value={topNPerQuery}
-                onChange={(e) => setTopNPerQuery(Number(e.target.value))}
+                value={maxUrls}
+                onChange={(e) => setMaxUrls(Number(e.target.value))}
                 disabled={running}
                 className="w-full rounded-lg border border-[var(--border)] bg-slate-50 px-3 py-2.5 text-sm text-[var(--foreground)] outline-none focus:border-[var(--accent)] disabled:opacity-50"
               >
-                {TOP_N_OPTIONS.map((n) => (
-                  <option key={n} value={n}>{n} URLs per query</option>
+                {MAX_URLS_OPTIONS.map((n) => (
+                  <option key={n} value={n}>Top {n} URLs</option>
                 ))}
               </select>
             </div>

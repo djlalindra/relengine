@@ -178,7 +178,7 @@ export async function runPageRelevance(
   seedQuery: string,
   city: string,
   fanoutCount: number,
-  topNPerQuery: number,
+  maxUrls: number,
   onProgress: (step: string) => void,
   signal?: AbortSignal
 ): Promise<PageRelevanceResult> {
@@ -216,8 +216,13 @@ export async function runPageRelevance(
     `Searching Google for top organic URLs across ${allQueries.length} quer${allQueries.length === 1 ? "y" : "ies"}…`
   );
 
+  // Request just enough per query to hit the total target after dedup.
+  // We ask for ceil(maxUrls / queries) + 1 per query so that even with
+  // some duplicates across queries we reliably get maxUrls unique URLs.
+  const perQueryN = Math.max(3, Math.ceil((maxUrls + 2) / allQueries.length));
+
   const groundingResults = await Promise.allSettled(
-    allQueries.map((q) => getGroundedUrls(q, topNPerQuery, signal))
+    allQueries.map((q) => getGroundedUrls(q, perQueryN, signal))
   );
 
   const seenUris = new Set<string>();
@@ -227,7 +232,7 @@ export async function runPageRelevance(
     if (result.status === "fulfilled") {
       for (const g of result.value) {
         const key = g.resolvedUri;
-        if (!seenUris.has(key)) {
+        if (!seenUris.has(key) && uniqueUrls.length < maxUrls) {
           seenUris.add(key);
           uniqueUrls.push({ uri: g.resolvedUri, title: g.title });
         }

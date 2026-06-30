@@ -10,7 +10,7 @@ export async function POST(req: NextRequest) {
     seedQuery?: string;
     city?: string;
     fanoutCount?: number;
-    topNPerQuery?: number;
+    maxUrls?: number;
   };
 
   try {
@@ -27,7 +27,7 @@ export async function POST(req: NextRequest) {
   }
 
   const fanoutCount = Math.min(14, Math.max(0, Math.round(body.fanoutCount ?? 5)));
-  const topNPerQuery = Math.min(10, Math.max(1, Math.round(body.topNPerQuery ?? 3)));
+  const maxUrls = Math.min(15, Math.max(3, Math.round(body.maxUrls ?? 5)));
 
   const controller = new AbortController();
   req.signal.addEventListener("abort", () => controller.abort());
@@ -43,7 +43,7 @@ export async function POST(req: NextRequest) {
           seedQuery,
           city,
           fanoutCount,
-          topNPerQuery,
+          maxUrls,
           onProgress,
           controller.signal
         );
