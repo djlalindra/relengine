@@ -31,7 +31,6 @@ export async function callClaude(
     body: JSON.stringify({
       model,
       max_tokens: maxTokens,
-      temperature: options.temperature ?? 0.7,
       system: systemPrompt,
       messages: [{ role: "user", content: userContent }],
     }),
