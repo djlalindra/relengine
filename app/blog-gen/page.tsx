@@ -47,6 +47,141 @@ function deleteRun(runId: string) {
   localStorage.setItem(STORAGE_KEY, JSON.stringify(history));
 }
 
+function downloadText(filename: string, content: string) {
+  const blob = new Blob([content], { type: "text/plain;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+function slug(keyword: string) {
+  return keyword.replace(/[^a-z0-9]+/gi, "-").toLowerCase();
+}
+
+function buildResearchDownload(run: BlogGenRun): string {
+  const p = run.phases;
+  const lines: string[] = [
+    `RESEARCH REPORT — "${run.keyword}"`,
+    `Generated: ${new Date(run.created_at).toLocaleString()}`,
+    "",
+    "═══════════════════════════════════════",
+    "PHASE 0 — INTENT ANALYSIS",
+    "═══════════════════════════════════════",
+    `Primary intent: ${p.p0?.primary_intent ?? "—"}`,
+    `Scope note: ${p.p0?.scope_note ?? "—"}`,
+    "",
+    "Sub-intents:",
+    ...(p.p0?.sub_intents?.map((s) => `  • ${s}`) ?? ["  —"]),
+    "",
+    "═══════════════════════════════════════",
+    "PHASE 1 — ENTITIES & SEMANTIC CLUSTERS",
+    "═══════════════════════════════════════",
+    "Core entities:",
+    ...(p.p1?.core_entities?.map((e) => `  • ${e}`) ?? ["  —"]),
+    "",
+    "Semantic clusters:",
+    ...(p.p1?.semantic_clusters?.map((c) => `  [${c.cluster}]  ${c.terms.join(", ")}`) ?? ["  —"]),
+    "",
+    "Notably absent from competitors:",
+    ...(p.p1?.notably_absent_from_competitors?.map((e) => `  • ${e}`) ?? ["  —"]),
+    "",
+    "═══════════════════════════════════════",
+    "PHASE 2 — FAN-OUT QUERIES",
+    "═══════════════════════════════════════",
+    ...(p.p2?.fanout_queries?.map((q, i) => `  ${i + 1}. ${q}`) ?? ["  —"]),
+    "",
+    "═══════════════════════════════════════",
+    "PHASE 3 — SERP & COMPETITOR ANALYSIS",
+    "═══════════════════════════════════════",
+    `Common format: ${p.p3?.serp_patterns?.common_format ?? "—"}`,
+    `Common H1 pattern: ${p.p3?.serp_patterns?.common_h1_pattern ?? "—"}`,
+    `Avg word count: ${p.p3?.serp_patterns?.avg_word_count ?? "—"}`,
+    "",
+    `AI Overview summary: ${p.p3?.ai_overview_summary ?? "—"}`,
+    "",
+    "Competitor angles:",
+    ...(p.p3?.leading_angle_per_competitor?.map((c) => `  [${c.source}]  ${c.angle}`) ?? ["  —"]),
+    "",
+    "Competitor URLs crawled:",
+    ...(p.p3?.competitor_urls?.map((u) => `  • ${u}`) ?? ["  —"]),
+    "",
+    "═══════════════════════════════════════",
+    "PHASE 4 — COVERAGE GAP ANALYSIS",
+    "═══════════════════════════════════════",
+    "Fully covered by competitors:",
+    ...(p.p4?.fully_covered?.map((t) => `  ✓ ${t}`) ?? ["  —"]),
+    "",
+    "Partially covered:",
+    ...(p.p4?.partially_covered?.map((t) => `  ~ ${t}`) ?? ["  —"]),
+    "",
+    "GAPS (your opportunity):",
+    ...(p.p4?.gaps?.map((g) => `  ✗ ${g.topic}\n    Why it matters: ${g.why_it_matters}`) ?? ["  —"]),
+    "",
+    "═══════════════════════════════════════",
+    "PHASE 5 — DIFFERENTIATION STRATEGY",
+    "═══════════════════════════════════════",
+    `Angle: ${p.p5?.angle_statement ?? "—"}`,
+    `Target word count: ${p.p5?.target_word_count ?? "—"}`,
+    "",
+    "Differentiation points:",
+    ...(p.p5?.differentiation_points?.map((d) => `  • ${d}`) ?? ["  —"]),
+  ];
+  return lines.join("\n");
+}
+
+function buildOutlineDownload(run: BlogGenRun): string {
+  const p6 = run.phases.p6;
+  if (!p6) return "";
+  const lines = [
+    `OUTLINE — "${run.keyword}"`,
+    `Generated: ${new Date(run.created_at).toLocaleString()}`,
+    "",
+    `H1: ${p6.h1}`,
+    "",
+    ...(p6.sections?.flatMap((s, i) => [
+      `H2 ${i + 1}: ${s.h2}`,
+      `  Must answer: ${s.must_answer}`,
+      `  Format: ${s.format}${s.needs_citation ? "  |  Citation needed" : ""}`,
+      "",
+    ]) ?? []),
+  ];
+  return lines.join("\n");
+}
+
+function buildSourcesDownload(run: BlogGenRun): string {
+  const { p8, p9, p10 } = run.phases;
+  const lines = [
+    `SOURCES & FACT-CHECK — "${run.keyword}"`,
+    `Generated: ${new Date(run.created_at).toLocaleString()}`,
+    "",
+    "═══════════════════════════════════════",
+    "SOURCED CLAIMS",
+    "═══════════════════════════════════════",
+    ...(p8?.sourced_claims?.map((c, i) => [
+      `${i + 1}. ${c.claim}`,
+      `   Source: ${c.source_title} (${c.source_url})`,
+      `   Type: ${c.source_type}  |  Supports: ${c.supports_claim ? "yes" : "no"}`,
+      c.author ? `   Author: ${c.author}${c.year ? `, ${c.year}` : ""}` : "",
+    ].filter(Boolean).join("\n")) ?? ["—"]),
+    "",
+    "═══════════════════════════════════════",
+    "CORRECTIONS APPLIED",
+    "═══════════════════════════════════════",
+    ...(p9?.corrections_needed?.length
+      ? p9.corrections_needed.map((c, i) => `${i + 1}. [${c.location}] ${c.issue}\n   Fix: ${c.fix}`)
+      : ["None"]),
+    "",
+    "═══════════════════════════════════════",
+    "HARVARD REFERENCES",
+    "═══════════════════════════════════════",
+    ...(p10?.harvard_references?.map((r, i) => `${i + 1}. ${r}`) ?? ["—"]),
+  ];
+  return lines.join("\n");
+}
+
 async function streamPhase(
   url: string,
   body: object,
@@ -310,7 +445,7 @@ export default function BlogGenPage() {
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = url;
-      a.download = `blog-${r.keyword.replace(/[^a-z0-9]+/gi, "-").toLowerCase()}.docx`;
+      a.download = `blog-${slug(r.keyword)}.docx`;
       a.click();
       URL.revokeObjectURL(url);
     } catch (err) {
@@ -321,6 +456,7 @@ export default function BlogGenPage() {
   }
 
   const currentPhaseIndex = activePhase ? PHASE_LABELS.findIndex((p) => p.key === activePhase) : -1;
+  void currentPhaseIndex;
   const completedPhases = run
     ? PHASE_LABELS.filter((p) => {
         if (p.key === "research") return !!run.phases.p0;
@@ -532,45 +668,186 @@ export default function BlogGenPage() {
 
             {/* Phase output panels */}
             <div className="space-y-3">
-              {/* Research summary */}
+
+              {/* ── Research ── */}
               {run.phases.p5 && (
-                <PhasePanel title="Research" badge={`${run.phases.p4?.gaps?.length ?? 0} gaps · ${run.phases.p5.target_word_count} word target`} expanded={expandedPhase === "research"} onToggle={() => setExpandedPhase(expandedPhase === "research" ? null : "research")}>
-                  <div className="space-y-3 text-sm">
-                    <div>
-                      <p className="text-xs font-medium text-[var(--muted)] mb-1">Angle</p>
-                      <p className="text-[var(--foreground)]">{run.phases.p5.angle_statement}</p>
-                    </div>
-                    <div>
-                      <p className="text-xs font-medium text-[var(--muted)] mb-1">Differentiation Points</p>
-                      <ul className="list-disc list-inside space-y-0.5 text-[var(--foreground)]">
-                        {run.phases.p5.differentiation_points?.map((d, i) => <li key={i}>{d}</li>)}
-                      </ul>
-                    </div>
-                    <div>
-                      <p className="text-xs font-medium text-[var(--muted)] mb-1">Gaps Found</p>
-                      <ul className="space-y-1">
-                        {run.phases.p4?.gaps?.map((g, i) => (
-                          <li key={i} className="text-[var(--foreground)]"><span className="font-medium">{g.topic}:</span> {g.why_it_matters}</li>
-                        ))}
-                      </ul>
-                    </div>
-                    {run.phases.p2?.fanout_queries && (
-                      <div>
-                        <p className="text-xs font-medium text-[var(--muted)] mb-1">Fan-out Queries ({run.phases.p2.fanout_queries.length})</p>
+                <PhasePanel
+                  title="Research"
+                  badge={`${run.phases.p4?.gaps?.length ?? 0} gaps · ${run.phases.p5.target_word_count} word target`}
+                  expanded={expandedPhase === "research"}
+                  onToggle={() => setExpandedPhase(expandedPhase === "research" ? null : "research")}
+                  onDownload={() => downloadText(`research-${slug(run.keyword)}.txt`, buildResearchDownload(run))}
+                >
+                  <div className="space-y-5 text-sm">
+
+                    {/* Intent */}
+                    {run.phases.p0 && (
+                      <ReasoningBlock title="Intent Analysis" color="blue">
+                        <p className="text-[var(--foreground)] font-medium mb-1">{run.phases.p0.primary_intent}</p>
+                        <p className="text-xs text-[var(--muted)] mb-2">{run.phases.p0.scope_note}</p>
                         <div className="flex flex-wrap gap-1">
-                          {run.phases.p2.fanout_queries.map((q, i) => (
-                            <span key={i} className="text-xs px-2 py-0.5 rounded-full bg-slate-100 text-[var(--muted)]">{q}</span>
+                          {run.phases.p0.sub_intents?.map((s, i) => (
+                            <span key={i} className="text-xs px-2 py-0.5 rounded-full bg-blue-50 text-blue-700">{s}</span>
                           ))}
                         </div>
-                      </div>
+                      </ReasoningBlock>
                     )}
+
+                    {/* Entities & clusters */}
+                    {run.phases.p1 && (
+                      <ReasoningBlock title="Entities & Semantic Clusters" color="purple">
+                        <div className="mb-2">
+                          <p className="text-xs text-[var(--muted)] mb-1">Core entities</p>
+                          <div className="flex flex-wrap gap-1">
+                            {run.phases.p1.core_entities?.map((e, i) => (
+                              <span key={i} className="text-xs px-2 py-0.5 rounded-full bg-purple-50 text-purple-700">{e}</span>
+                            ))}
+                          </div>
+                        </div>
+                        {run.phases.p1.semantic_clusters?.map((c, i) => (
+                          <div key={i} className="mt-2">
+                            <p className="text-xs font-medium text-[var(--muted)]">[{c.cluster}]</p>
+                            <div className="flex flex-wrap gap-1 mt-0.5">
+                              {c.terms.map((t, j) => (
+                                <span key={j} className="text-xs px-2 py-0.5 rounded-full bg-slate-100 text-[var(--muted)]">{t}</span>
+                              ))}
+                            </div>
+                          </div>
+                        ))}
+                        {run.phases.p1.notably_absent_from_competitors?.length ? (
+                          <div className="mt-2">
+                            <p className="text-xs text-[var(--muted)] mb-1">Notably absent from competitors</p>
+                            <div className="flex flex-wrap gap-1">
+                              {run.phases.p1.notably_absent_from_competitors.map((e, i) => (
+                                <span key={i} className="text-xs px-2 py-0.5 rounded-full bg-amber-50 text-amber-700">{e}</span>
+                              ))}
+                            </div>
+                          </div>
+                        ) : null}
+                      </ReasoningBlock>
+                    )}
+
+                    {/* Fan-out queries */}
+                    {run.phases.p2?.fanout_queries && (
+                      <ReasoningBlock title={`Fan-out Queries (${run.phases.p2.fanout_queries.length})`} color="teal">
+                        <p className="text-xs text-[var(--muted)] mb-2">These are the sub-questions Gemini used to map the full information space around your keyword.</p>
+                        <ol className="space-y-1">
+                          {run.phases.p2.fanout_queries.map((q, i) => (
+                            <li key={i} className="flex gap-2">
+                              <span className="text-xs text-teal-500 font-medium flex-shrink-0">{i + 1}.</span>
+                              <span className="text-xs text-[var(--foreground)]">{q}</span>
+                            </li>
+                          ))}
+                        </ol>
+                      </ReasoningBlock>
+                    )}
+
+                    {/* SERP & competitors */}
+                    {run.phases.p3 && (
+                      <ReasoningBlock title="SERP & Competitor Analysis" color="orange">
+                        <div className="grid grid-cols-3 gap-3 mb-3">
+                          <div className="rounded-lg bg-orange-50 p-2 text-center">
+                            <p className="text-xs text-[var(--muted)]">Avg word count</p>
+                            <p className="text-sm font-semibold text-orange-700">{run.phases.p3.serp_patterns?.avg_word_count ?? "—"}</p>
+                          </div>
+                          <div className="rounded-lg bg-orange-50 p-2 text-center col-span-2">
+                            <p className="text-xs text-[var(--muted)]">Common format</p>
+                            <p className="text-xs font-medium text-orange-700">{run.phases.p3.serp_patterns?.common_format ?? "—"}</p>
+                          </div>
+                        </div>
+                        <p className="text-xs text-[var(--muted)] mb-0.5">Common H1 pattern</p>
+                        <p className="text-xs text-[var(--foreground)] mb-3 italic">"{run.phases.p3.serp_patterns?.common_h1_pattern}"</p>
+                        {run.phases.p3.ai_overview_summary && (
+                          <div className="mb-3">
+                            <p className="text-xs text-[var(--muted)] mb-0.5">AI Overview / SGE summary</p>
+                            <p className="text-xs text-[var(--foreground)]">{run.phases.p3.ai_overview_summary}</p>
+                          </div>
+                        )}
+                        {run.phases.p3.leading_angle_per_competitor?.length ? (
+                          <div>
+                            <p className="text-xs text-[var(--muted)] mb-1">Competitor angles</p>
+                            <div className="space-y-1.5">
+                              {run.phases.p3.leading_angle_per_competitor.map((c, i) => (
+                                <div key={i} className="flex gap-2 items-start">
+                                  <span className="text-xs text-[var(--muted)] flex-shrink-0 w-4">{i + 1}.</span>
+                                  <div>
+                                    <p className="text-xs font-medium text-[var(--foreground)] truncate max-w-xs">{c.source}</p>
+                                    <p className="text-xs text-[var(--muted)]">{c.angle}</p>
+                                  </div>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        ) : null}
+                      </ReasoningBlock>
+                    )}
+
+                    {/* Gap analysis */}
+                    {run.phases.p4 && (
+                      <ReasoningBlock title="Coverage Gap Analysis" color="red">
+                        {run.phases.p4.fully_covered?.length ? (
+                          <div className="mb-2">
+                            <p className="text-xs text-[var(--muted)] mb-1">Fully covered by competitors</p>
+                            <div className="flex flex-wrap gap-1">
+                              {run.phases.p4.fully_covered.map((t, i) => (
+                                <span key={i} className="text-xs px-2 py-0.5 rounded-full bg-slate-100 text-[var(--muted)] line-through">{t}</span>
+                              ))}
+                            </div>
+                          </div>
+                        ) : null}
+                        {run.phases.p4.partially_covered?.length ? (
+                          <div className="mb-2">
+                            <p className="text-xs text-[var(--muted)] mb-1">Partially covered</p>
+                            <div className="flex flex-wrap gap-1">
+                              {run.phases.p4.partially_covered.map((t, i) => (
+                                <span key={i} className="text-xs px-2 py-0.5 rounded-full bg-amber-50 text-amber-700">{t}</span>
+                              ))}
+                            </div>
+                          </div>
+                        ) : null}
+                        {run.phases.p4.gaps?.length ? (
+                          <div>
+                            <p className="text-xs text-[var(--muted)] mb-1">Gaps — your opportunity</p>
+                            <ul className="space-y-1.5">
+                              {run.phases.p4.gaps.map((g, i) => (
+                                <li key={i} className="rounded-lg bg-red-50 p-2">
+                                  <p className="text-xs font-medium text-red-700">{g.topic}</p>
+                                  <p className="text-xs text-red-600">{g.why_it_matters}</p>
+                                </li>
+                              ))}
+                            </ul>
+                          </div>
+                        ) : null}
+                      </ReasoningBlock>
+                    )}
+
+                    {/* Differentiation decision */}
+                    <ReasoningBlock title="Differentiation Decision" color="green">
+                      <p className="text-xs text-[var(--muted)] mb-1">Angle chosen</p>
+                      <p className="text-sm font-medium text-[var(--foreground)] mb-3">{run.phases.p5.angle_statement}</p>
+                      <p className="text-xs text-[var(--muted)] mb-1">Why this angle wins</p>
+                      <ul className="space-y-1">
+                        {run.phases.p5.differentiation_points?.map((d, i) => (
+                          <li key={i} className="flex gap-2 text-xs text-[var(--foreground)]">
+                            <span className="text-green-500 flex-shrink-0">✓</span>{d}
+                          </li>
+                        ))}
+                      </ul>
+                      <p className="text-xs text-[var(--muted)] mt-2">Target word count: <span className="font-medium text-[var(--foreground)]">{run.phases.p5.target_word_count}</span></p>
+                    </ReasoningBlock>
                   </div>
                 </PhasePanel>
               )}
 
-              {/* Outline */}
+              {/* ── Outline ── */}
               {run.phases.p6 && (
-                <PhasePanel title="Outline" badge={`${run.phases.p6.sections?.length ?? 0} sections`} expanded={expandedPhase === "outline"} onToggle={() => setExpandedPhase(expandedPhase === "outline" ? null : "outline")}>
+                <PhasePanel
+                  title="Outline"
+                  badge={`${run.phases.p6.sections?.length ?? 0} sections`}
+                  expanded={expandedPhase === "outline"}
+                  onToggle={() => setExpandedPhase(expandedPhase === "outline" ? null : "outline")}
+                  onDownload={() => downloadText(`outline-${slug(run.keyword)}.txt`, buildOutlineDownload(run))}
+                >
                   <div className="text-sm space-y-2">
                     <p className="font-semibold text-[var(--foreground)]">H1: {run.phases.p6.h1}</p>
                     {run.phases.p6.sections?.map((s, i) => (
@@ -583,9 +860,38 @@ export default function BlogGenPage() {
                 </PhasePanel>
               )}
 
-              {/* Fact-check / sources */}
+              {/* ── Draft ── */}
+              {run.phases.p7 && (
+                <PhasePanel
+                  title="Draft"
+                  badge={`${run.phases.p7.draft_markdown?.split(/\s+/).length ?? 0} words`}
+                  expanded={expandedPhase === "draft"}
+                  onToggle={() => setExpandedPhase(expandedPhase === "draft" ? null : "draft")}
+                  onDownload={() => downloadText(`draft-${slug(run.keyword)}.md`, run.phases.p7?.draft_markdown ?? "")}
+                >
+                  <pre className="text-xs font-mono bg-slate-50 rounded-lg p-4 overflow-x-auto whitespace-pre-wrap text-[var(--foreground)] max-h-[400px] overflow-y-auto">
+                    {run.phases.p7.draft_markdown}
+                  </pre>
+                  {run.phases.p7.placeholders_needing_sources?.length ? (
+                    <div className="mt-3">
+                      <p className="text-xs text-[var(--muted)] mb-1">Placeholders needing sources</p>
+                      <ul className="list-disc list-inside text-xs text-amber-700 space-y-0.5">
+                        {run.phases.p7.placeholders_needing_sources.map((p, i) => <li key={i}>{p}</li>)}
+                      </ul>
+                    </div>
+                  ) : null}
+                </PhasePanel>
+              )}
+
+              {/* ── Fact-check / sources ── */}
               {run.phases.p10 && (
-                <PhasePanel title="Sources & References" badge={`${run.phases.p8?.sourced_claims?.length ?? 0} sources · ${run.phases.p8?.suggested_images?.length ?? 0} images`} expanded={expandedPhase === "factcheck"} onToggle={() => setExpandedPhase(expandedPhase === "factcheck" ? null : "factcheck")}>
+                <PhasePanel
+                  title="Sources & References"
+                  badge={`${run.phases.p8?.sourced_claims?.length ?? 0} sources · ${run.phases.p8?.suggested_images?.length ?? 0} images`}
+                  expanded={expandedPhase === "factcheck"}
+                  onToggle={() => setExpandedPhase(expandedPhase === "factcheck" ? null : "factcheck")}
+                  onDownload={() => downloadText(`sources-${slug(run.keyword)}.txt`, buildSourcesDownload(run))}
+                >
                   <div className="text-sm space-y-3">
                     {run.phases.p9?.corrections_needed?.length ? (
                       <div>
@@ -627,13 +933,88 @@ export default function BlogGenPage() {
                 </PhasePanel>
               )}
 
-              {/* Final article */}
+              {/* ── E-E-A-T ── */}
+              {run.phases.p12 && (
+                <PhasePanel
+                  title="E-E-A-T"
+                  badge={`${run.phases.p12.adjustments_made?.length ?? 0} adjustments`}
+                  expanded={expandedPhase === "eeat"}
+                  onToggle={() => setExpandedPhase(expandedPhase === "eeat" ? null : "eeat")}
+                  onDownload={() => downloadText(`eeat-${slug(run.keyword)}.md`, run.phases.p12?.revised_markdown ?? "")}
+                >
+                  <div className="text-sm space-y-3">
+                    {run.phases.p12.eeat_notes?.length ? (
+                      <div>
+                        <p className="text-xs font-medium text-[var(--muted)] mb-1">E-E-A-T signals added</p>
+                        <ul className="list-disc list-inside space-y-0.5 text-[var(--foreground)] text-xs">
+                          {run.phases.p12.eeat_notes.map((n, i) => <li key={i}>{n}</li>)}
+                        </ul>
+                      </div>
+                    ) : null}
+                    {run.phases.p12.adjustments_made?.length ? (
+                      <div>
+                        <p className="text-xs font-medium text-[var(--muted)] mb-1">Adjustments made</p>
+                        <ul className="list-disc list-inside space-y-0.5 text-[var(--foreground)] text-xs">
+                          {run.phases.p12.adjustments_made.map((a, i) => <li key={i}>{a}</li>)}
+                        </ul>
+                      </div>
+                    ) : null}
+                    <pre className="text-xs font-mono bg-slate-50 rounded-lg p-4 overflow-x-auto whitespace-pre-wrap text-[var(--foreground)] max-h-[300px] overflow-y-auto">
+                      {run.phases.p12.revised_markdown}
+                    </pre>
+                  </div>
+                </PhasePanel>
+              )}
+
+              {/* ── Humanize ── */}
+              {run.phases.p115 && (
+                <PhasePanel
+                  title="Humanize"
+                  badge={`AI signal: ${run.phases.p115.pre_edit_signal_score} → ${run.phases.p115.post_edit_signal_score} · ${run.phases.p115.band}`}
+                  expanded={expandedPhase === "humanize"}
+                  onToggle={() => setExpandedPhase(expandedPhase === "humanize" ? null : "humanize")}
+                  onDownload={() => downloadText(`humanized-${slug(run.keyword)}.md`, run.phases.p115?.revised_draft ?? "")}
+                >
+                  <div className="text-sm space-y-3">
+                    <div className="grid grid-cols-3 gap-3">
+                      <div className="rounded-lg bg-slate-50 p-2 text-center">
+                        <p className="text-xs text-[var(--muted)]">Before</p>
+                        <p className="text-sm font-semibold text-red-500">{run.phases.p115.pre_edit_signal_score}/100</p>
+                      </div>
+                      <div className="rounded-lg bg-slate-50 p-2 text-center">
+                        <p className="text-xs text-[var(--muted)]">After</p>
+                        <p className="text-sm font-semibold text-green-600">{run.phases.p115.post_edit_signal_score}/100</p>
+                      </div>
+                      <div className="rounded-lg bg-slate-50 p-2 text-center">
+                        <p className="text-xs text-[var(--muted)]">Band</p>
+                        <p className="text-sm font-semibold text-[var(--foreground)]">{run.phases.p115.band}</p>
+                      </div>
+                    </div>
+                    {run.phases.p115.categories_fixed?.length ? (
+                      <div>
+                        <p className="text-xs font-medium text-[var(--muted)] mb-1">AI tells removed</p>
+                        <div className="flex flex-wrap gap-1">
+                          {run.phases.p115.categories_fixed.map((c, i) => (
+                            <span key={i} className="text-xs px-2 py-0.5 rounded-full bg-green-50 text-green-700">{c}</span>
+                          ))}
+                        </div>
+                      </div>
+                    ) : null}
+                    <pre className="text-xs font-mono bg-slate-50 rounded-lg p-4 overflow-x-auto whitespace-pre-wrap text-[var(--foreground)] max-h-[300px] overflow-y-auto">
+                      {run.phases.p115.revised_draft}
+                    </pre>
+                  </div>
+                </PhasePanel>
+              )}
+
+              {/* ── Final article ── */}
               {run.final_markdown && (
                 <PhasePanel
                   title="Final Article"
                   badge={`${run.final_markdown.split(/\s+/).length} words · ${run.phases.p115?.band ?? ""} AI signal`}
                   expanded={expandedPhase === "article"}
                   onToggle={() => setExpandedPhase(expandedPhase === "article" ? null : "article")}
+                  onDownload={() => downloadText(`final-${slug(run.keyword)}.md`, run.final_markdown ?? "")}
                 >
                   <div className="flex justify-end mb-3">
                     <button
@@ -665,27 +1046,70 @@ function PhasePanel({
   badge,
   expanded,
   onToggle,
+  onDownload,
   children,
 }: {
   title: string;
   badge?: string;
   expanded: boolean;
   onToggle: () => void;
+  onDownload?: () => void;
   children: React.ReactNode;
 }) {
   return (
     <div className="rounded-xl border border-[var(--border)] bg-[var(--card)] overflow-hidden">
-      <button
-        onClick={onToggle}
-        className="w-full flex items-center justify-between p-4 hover:bg-slate-50 transition text-left"
-      >
-        <div className="flex items-center gap-2">
+      <div className="w-full flex items-center justify-between p-4 hover:bg-slate-50 transition">
+        <button onClick={onToggle} className="flex items-center gap-2 flex-1 text-left">
           <span className="text-sm font-medium text-[var(--foreground)]">{title}</span>
           {badge && <span className="text-xs px-2 py-0.5 rounded-full bg-slate-100 text-[var(--muted)]">{badge}</span>}
+        </button>
+        <div className="flex items-center gap-2">
+          {onDownload && (
+            <button
+              onClick={(e) => { e.stopPropagation(); onDownload(); }}
+              className="text-xs px-2.5 py-1 rounded border border-[var(--border)] text-[var(--muted)] hover:text-[var(--foreground)] hover:border-[var(--accent)] transition"
+              title="Download this step"
+            >
+              ↓ Download
+            </button>
+          )}
+          <button onClick={onToggle} className="text-[var(--muted)] text-sm px-1">{expanded ? "▲" : "▼"}</button>
         </div>
-        <span className="text-[var(--muted)] text-sm">{expanded ? "▲" : "▼"}</span>
-      </button>
+      </div>
       {expanded && <div className="px-4 pb-4 border-t border-[var(--border)]"><div className="pt-4">{children}</div></div>}
+    </div>
+  );
+}
+
+function ReasoningBlock({
+  title,
+  color,
+  children,
+}: {
+  title: string;
+  color: "blue" | "purple" | "teal" | "orange" | "red" | "green";
+  children: React.ReactNode;
+}) {
+  const accent: Record<string, string> = {
+    blue: "border-blue-200 bg-blue-50/40",
+    purple: "border-purple-200 bg-purple-50/40",
+    teal: "border-teal-200 bg-teal-50/40",
+    orange: "border-orange-200 bg-orange-50/40",
+    red: "border-red-200 bg-red-50/40",
+    green: "border-green-200 bg-green-50/40",
+  };
+  const label: Record<string, string> = {
+    blue: "text-blue-700",
+    purple: "text-purple-700",
+    teal: "text-teal-700",
+    orange: "text-orange-700",
+    red: "text-red-700",
+    green: "text-green-700",
+  };
+  return (
+    <div className={`rounded-lg border p-3 ${accent[color]}`}>
+      <p className={`text-xs font-semibold mb-2 uppercase tracking-wide ${label[color]}`}>{title}</p>
+      {children}
     </div>
   );
 }
