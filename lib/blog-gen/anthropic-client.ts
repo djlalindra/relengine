@@ -55,5 +55,5 @@ export async function callClaude(
   return text;
 }
 
-export const SONNET_5 = "claude-sonnet-5-20260601";
+export const SONNET_5 = "claude-sonnet-5";
 export const HAIKU_45 = "claude-haiku-4-5-20251001";
