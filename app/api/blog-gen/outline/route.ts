@@ -14,7 +14,7 @@ function parseJson(text: string): unknown {
 }
 
 export async function POST(req: NextRequest) {
-  let body: { keyword?: string; research?: unknown };
+  let body: { keyword?: string; research?: unknown; rerun_comment?: string };
   try {
     body = await req.json();
   } catch {
@@ -40,7 +40,7 @@ export async function POST(req: NextRequest) {
         const raw = await callModel(
           [
             { role: "system", content: RESEARCH_SYSTEM },
-            { role: "user", content: buildOutlinePrompt(JSON.stringify(body.research, null, 2), keyword) },
+            { role: "user", content: buildOutlinePrompt(JSON.stringify(body.research, null, 2), keyword, body.rerun_comment) },
           ],
           { maxTokens: 4000, jsonMode: true, signal: controller.signal }
         );

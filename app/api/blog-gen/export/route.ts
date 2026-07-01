@@ -1,9 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
-import { buildDocx } from "@/lib/blog-gen/docx-export";
+import { buildDocx, buildCleanArticleDocx } from "@/lib/blog-gen/docx-export";
 import type { BlogGenRun } from "@/lib/blog-gen/types";
 
 export async function POST(req: NextRequest) {
-  let body: { run?: BlogGenRun };
+  let body: { run?: BlogGenRun; clean_only?: boolean };
   try {
     body = await req.json();
   } catch {
@@ -15,8 +15,12 @@ export async function POST(req: NextRequest) {
   }
 
   try {
-    const buffer = await buildDocx(body.run);
-    const filename = `blog-${body.run.keyword.replace(/[^a-z0-9]+/gi, "-").toLowerCase()}-${body.run.run_id.slice(0, 8)}.docx`;
+    const buffer = body.clean_only
+      ? await buildCleanArticleDocx(body.run)
+      : await buildDocx(body.run);
+
+    const prefix = body.clean_only ? "article" : "blog";
+    const filename = `${prefix}-${body.run.keyword.replace(/[^a-z0-9]+/gi, "-").toLowerCase()}-${body.run.run_id.slice(0, 8)}.docx`;
 
     return new NextResponse(buffer as unknown as BodyInit, {
       headers: {

@@ -15,6 +15,24 @@ import { readFileSync, existsSync } from "fs";
 import { join } from "path";
 import type { BlogGenRun } from "./types";
 
+// Strip markdown artifacts that don't belong in a Word document
+function cleanMarkdown(markdown: string): string {
+  return markdown
+    // Remove hypothetical/example labels: (Hypothetical Example), [Hypothetical], **(Example)** etc.
+    .replace(/\*?\*?\(Hypothetical[^)]*\)\*?\*?/gi, "")
+    .replace(/\*?\*?\[Hypothetical[^\]]*\]\*?\*?/gi, "")
+    .replace(/\*?\*?\(Example[^)]*\)\*?\*?/gi, "")
+    // Remove blockquote prefixes
+    .replace(/^> /gm, "")
+    // Remove horizontal rules
+    .replace(/^---+$/gm, "")
+    .replace(/^\*\*\*+$/gm, "")
+    .replace(/^___+$/gm, "")
+    // Clean up multiple blank lines
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
 function parseMarkdownLine(line: string): Paragraph {
   const trimmed = line.trim();
 
@@ -27,7 +45,8 @@ function parseMarkdownLine(line: string): Paragraph {
   if (trimmed.startsWith("### ")) {
     return new Paragraph({ text: trimmed.slice(4), heading: HeadingLevel.HEADING_3 });
   }
-  if (trimmed.startsWith("- ") || trimmed.startsWith("* ")) {
+  // Bullet: "- item" or "* item" (with space after)
+  if (/^[-*]\s/.test(trimmed)) {
     return new Paragraph({
       text: trimmed.slice(2),
       bullet: { level: 0 },
@@ -43,18 +62,19 @@ function parseMarkdownLine(line: string): Paragraph {
     return new Paragraph({ text: "" });
   }
 
-  // Inline bold/italic parsing
+  // Inline bold/italic parsing — strip leftover * that aren't formatting
   const runs: TextRun[] = [];
   const parts = trimmed.split(/(\*\*[^*]+\*\*|\*[^*]+\*|`[^`]+`)/);
   for (const part of parts) {
     if (part.startsWith("**") && part.endsWith("**")) {
       runs.push(new TextRun({ text: part.slice(2, -2), bold: true }));
-    } else if (part.startsWith("*") && part.endsWith("*")) {
+    } else if (part.startsWith("*") && part.endsWith("*") && part.length > 2) {
       runs.push(new TextRun({ text: part.slice(1, -1), italics: true }));
     } else if (part.startsWith("`") && part.endsWith("`")) {
       runs.push(new TextRun({ text: part.slice(1, -1), font: "Courier New" }));
     } else if (part) {
-      runs.push(new TextRun({ text: part }));
+      // Strip any remaining stray asterisks
+      runs.push(new TextRun({ text: part.replace(/^\*+\s*/, "") }));
     }
   }
 
@@ -62,7 +82,7 @@ function parseMarkdownLine(line: string): Paragraph {
 }
 
 function markdownToParagraphs(markdown: string): Paragraph[] {
-  return markdown.split("\n").map(parseMarkdownLine);
+  return cleanMarkdown(markdown).split("\n").map(parseMarkdownLine);
 }
 
 function buildRunSummaryTable(run: BlogGenRun): Table {
@@ -106,60 +126,13 @@ function buildRunSummaryTable(run: BlogGenRun): Table {
   });
 }
 
-export async function buildDocx(run: BlogGenRun): Promise<Buffer> {
-  const children: (Paragraph | Table | ImageRun)[] = [];
+function buildArticleContent(run: BlogGenRun): (Paragraph | ImageRun)[] {
+  const children: (Paragraph | ImageRun)[] = [];
 
-  // Cover info
-  children.push(
-    new Paragraph({
-      text: "Blog Generation Run Report",
-      heading: HeadingLevel.TITLE,
-      alignment: AlignmentType.CENTER,
-    }),
-    new Paragraph({ text: "" }),
-    buildRunSummaryTable(run),
-    new Paragraph({ text: "" })
-  );
-
-  // Differentiation points
-  if (run.phases.p5?.differentiation_points?.length) {
-    children.push(
-      new Paragraph({ text: "Differentiation Points", heading: HeadingLevel.HEADING_2 }),
-      ...run.phases.p5.differentiation_points.map(
-        (pt) => new Paragraph({ text: pt, bullet: { level: 0 } })
-      ),
-      new Paragraph({ text: "" })
-    );
-  }
-
-  // Gap analysis
-  if (run.phases.p4?.gaps?.length) {
-    children.push(
-      new Paragraph({ text: "Information Gaps Found", heading: HeadingLevel.HEADING_2 }),
-      ...run.phases.p4.gaps.map(
-        (g) =>
-          new Paragraph({
-            children: [
-              new TextRun({ text: g.topic + ": ", bold: true }),
-              new TextRun({ text: g.why_it_matters }),
-            ],
-            bullet: { level: 0 },
-          })
-      ),
-      new Paragraph({ text: "" })
-    );
-  }
-
-  // Final article
   const finalMarkdown = run.final_markdown ?? run.phases.p115?.revised_draft ?? run.phases.p12?.revised_markdown ?? run.phases.p7?.draft_markdown ?? "";
 
   if (finalMarkdown) {
-    children.push(
-      new Paragraph({ text: "Final Article", heading: HeadingLevel.HEADING_1 }),
-      new Paragraph({ text: "" })
-    );
-
-    const lines = finalMarkdown.split("\n");
+    const lines = cleanMarkdown(finalMarkdown).split("\n");
     for (const line of lines) {
       children.push(parseMarkdownLine(line));
     }
@@ -198,7 +171,57 @@ export async function buildDocx(run: BlogGenRun): Promise<Buffer> {
     }
   }
 
-  // References
+  return children;
+}
+
+// Full run report (with summary table, gap analysis, etc.)
+export async function buildDocx(run: BlogGenRun): Promise<Buffer> {
+  const children: (Paragraph | Table | ImageRun)[] = [];
+
+  children.push(
+    new Paragraph({
+      text: "Blog Generation Run Report",
+      heading: HeadingLevel.TITLE,
+      alignment: AlignmentType.CENTER,
+    }),
+    new Paragraph({ text: "" }),
+    buildRunSummaryTable(run),
+    new Paragraph({ text: "" })
+  );
+
+  if (run.phases.p5?.differentiation_points?.length) {
+    children.push(
+      new Paragraph({ text: "Differentiation Points", heading: HeadingLevel.HEADING_2 }),
+      ...run.phases.p5.differentiation_points.map(
+        (pt) => new Paragraph({ text: pt, bullet: { level: 0 } })
+      ),
+      new Paragraph({ text: "" })
+    );
+  }
+
+  if (run.phases.p4?.gaps?.length) {
+    children.push(
+      new Paragraph({ text: "Information Gaps Found", heading: HeadingLevel.HEADING_2 }),
+      ...run.phases.p4.gaps.map(
+        (g) =>
+          new Paragraph({
+            children: [
+              new TextRun({ text: g.topic + ": ", bold: true }),
+              new TextRun({ text: g.why_it_matters }),
+            ],
+            bullet: { level: 0 },
+          })
+      ),
+      new Paragraph({ text: "" })
+    );
+  }
+
+  children.push(
+    new Paragraph({ text: "Article", heading: HeadingLevel.HEADING_1 }),
+    new Paragraph({ text: "" }),
+    ...buildArticleContent(run)
+  );
+
   if (run.phases.p10?.harvard_references?.length) {
     children.push(
       new Paragraph({ text: "" }),
@@ -207,7 +230,6 @@ export async function buildDocx(run: BlogGenRun): Promise<Buffer> {
     );
   }
 
-  // QA Gate
   if (run.phases.p13) {
     const gate = run.phases.p13;
     children.push(
@@ -220,6 +242,35 @@ export async function buildDocx(run: BlogGenRun): Promise<Buffer> {
         ...gate.failing_items.map((f) => new Paragraph({ text: f, bullet: { level: 0 } }))
       );
     }
+  }
+
+  const doc = new Document({
+    numbering: {
+      config: [
+        {
+          reference: "default-numbering",
+          levels: [{ level: 0, format: "decimal", text: "%1.", alignment: AlignmentType.START }],
+        },
+      ],
+    },
+    sections: [{ children: children as Paragraph[] }],
+  });
+
+  return await Packer.toBuffer(doc);
+}
+
+// Clean article only — no report wrapper, no meta sections
+export async function buildCleanArticleDocx(run: BlogGenRun): Promise<Buffer> {
+  const children: (Paragraph | Table | ImageRun)[] = [
+    ...buildArticleContent(run),
+  ];
+
+  if (run.phases.p10?.harvard_references?.length) {
+    children.push(
+      new Paragraph({ text: "" }),
+      new Paragraph({ text: "References", heading: HeadingLevel.HEADING_2 }),
+      ...run.phases.p10.harvard_references.map((ref) => new Paragraph({ text: ref, spacing: { after: 120 } }))
+    );
   }
 
   const doc = new Document({

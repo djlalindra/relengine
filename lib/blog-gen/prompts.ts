@@ -14,8 +14,9 @@ You are the Writer Agent. You receive a research brief and outline and write the
 - Lists/tables: use them wherever content is a sequence, set, or comparison. Don't bury list-shaped content in prose.
 - Headings: descriptive, query-shaped, SEO- and AEO-relevant. No headline puns.
 - Every core entity from the brief appears at least once with its relationship to the topic defined.
-- Hypothetical examples must be clearly labeled ("Suppose a small clinic wants to...").
+- STATS REQUIREMENT: Include a minimum of 6–7 specific statistics, percentages, benchmarks, or data points distributed across sections where they add the most weight. Mark each with [NEEDS SOURCE: exact stat claim]. Do not invent stats — use only what is in the research brief or mark clearly for sourcing.
 - No invented statistics, quotes, studies, or citations — use [NEEDS SOURCE: claim] placeholder.
+- Do NOT label sections or passages with "(Hypothetical Example)", "(Hypothetical)", or any parenthetical meta-label. If an example is illustrative, write it naturally as "Consider a firm that..." or "Take the case where...". The reader does not need a label.
 - Tone: conversational. Write like a knowledgeable colleague, not a corporate document.
 - Passage-level optimization: each paragraph should stand alone and fully answer a sub-question if extracted in isolation.
 - Avoid AI tells from the start: no "not just X, but Y" constructions, no present-participle tack-ons ("...fostering engagement"), no "despite challenges, continues to thrive" closers. No pivotal/delve/tapestry/underscores/boasts/fosters/robust/meticulous. Vary section length and structure. Use plain "is/are/has" — not "serves as" or "represents".`;
@@ -35,6 +36,7 @@ Scan and fix:
 - Em dash density over 1 per 200 words — replace excess with commas, periods, or parentheses.
 - Structural rigidity — if every section has identical intro-sentence-then-bullets-then-wrap shape, vary at least some.
 - Over-substitution of "serves as", "represents", "stands as" — restore plain "is/are/has" where natural.
+- Remove any remaining "(Hypothetical Example)", "(Hypothetical)", or similar parenthetical labels. Rewrite the sentence to flow naturally without the label.
 
 Do NOT strip genuine hedging, wordy-but-natural phrasing, or plain unsourced claims — those are human signals.
 Word-swapping alone is not acceptable — if a sentence has AI shape, rewrite from the underlying fact.`;
@@ -83,7 +85,7 @@ For p5.target_word_count: calculate based on gap count — 1-3 gaps = 1200, 4-5 
 Do not reproduce competitor text verbatim. Summarize structurally.`;
 }
 
-export function buildOutlinePrompt(researchJson: string, keyword: string): string {
+export function buildOutlinePrompt(researchJson: string, keyword: string, rerunComment?: string): string {
   return `Research brief for "${keyword}":
 ${researchJson}
 
@@ -93,14 +95,15 @@ Run Phase 6. Build an answer-first outline. Output strict JSON:
   "sections": [{"h2": "", "must_answer": "", "format": "prose|list|table|steps", "needs_citation": true}]
 }
 
-H1 must match primary intent and include the primary entity. Opening section directly answers the core query in 2-4 sentences before any setup. H2s map to fan-out clusters, phrased as the questions users actually ask. Note where lists, tables, and numbered steps are structurally required.`;
+H1 must match primary intent and include the primary entity. Opening section directly answers the core query in 2-4 sentences before any setup. H2s map to fan-out clusters, phrased as the questions users actually ask. Note where lists, tables, and numbered steps are structurally required.${rerunComment ? `\n\n---\nEDITOR REVISION NOTE:\n${rerunComment}\nApply this feedback in the revised outline.` : ""}`;
 }
 
 export function buildDraftPrompt(
   outline: string,
   research: string,
   targetWordCount: number,
-  manualEeatNotes: string
+  manualEeatNotes: string,
+  rerunComment?: string
 ): string {
   return `Research brief:
 ${research}
@@ -111,17 +114,20 @@ ${outline}
 Target word count: ${targetWordCount} words (±10%).
 ${manualEeatNotes ? `Manual E-E-A-T notes to weave in naturally (do not paraphrase, do not upgrade claims beyond what the user wrote): ${manualEeatNotes}` : ""}
 
+IMPORTANT: Include a minimum of 6–7 statistics, percentages, or data benchmarks distributed naturally across sections. Use [NEEDS SOURCE: exact claim] for each one so fact-checking can supply verified citations.
+
 Write the full draft following all constraints in your system prompt. Output JSON:
 {
   "draft_markdown": "...",
   "placeholders_needing_sources": [],
   "manual_eeat_used": false
-}`;
+}${rerunComment ? `\n\n---\nEDITOR REVISION NOTE:\n${rerunComment}\nApply this feedback throughout the draft.` : ""}`;
 }
 
 export function buildFactCheckPrompt(
   draftMarkdown: string,
-  sourcedClaimsJson: string
+  sourcedClaimsJson: string,
+  rerunComment?: string
 ): string {
   return `Draft:
 ${draftMarkdown}
@@ -153,10 +159,10 @@ Output JSON:
     "harvard_references": []
   },
   "corrected_markdown": ""
-}`;
+}${rerunComment ? `\n\n---\nEDITOR REVISION NOTE:\n${rerunComment}\nApply this feedback in the corrected output.` : ""}`;
 }
 
-export function buildEeatPrompt(draftMarkdown: string, manualEeatNotes: string): string {
+export function buildEeatPrompt(draftMarkdown: string, manualEeatNotes: string, rerunComment?: string): string {
   return `Article draft:
 ${draftMarkdown}
 
@@ -176,10 +182,10 @@ Output JSON:
   "adjustments_made": [],
   "manual_eeat_integrated": true,
   "revised_markdown": "..."
-}`;
+}${rerunComment ? `\n\n---\nEDITOR REVISION NOTE:\n${rerunComment}\nApply this feedback in the revised output.` : ""}`;
 }
 
-export function buildHumanizePrompt(draftMarkdown: string): string {
+export function buildHumanizePrompt(draftMarkdown: string, rerunComment?: string): string {
   return `Article to humanize:
 ${draftMarkdown}
 
@@ -192,10 +198,10 @@ Output JSON:
   "band": "Low|Moderate|High|Very high",
   "categories_fixed": [],
   "revised_draft": "..."
-}`;
+}${rerunComment ? `\n\n---\nEDITOR REVISION NOTE:\n${rerunComment}\nApply this feedback in the revised draft.` : ""}`;
 }
 
-export function buildCriticPrompt(finalMarkdown: string): string {
+export function buildCriticPrompt(finalMarkdown: string, rerunComment?: string): string {
   return `Article to critique:
 ${finalMarkdown}
 
@@ -224,5 +230,5 @@ Score against every rubric item. Re-derive everything from the text — do not a
   "em_dash_density_under_1_per_200_words": false,
   "failing_items": [],
   "gate_result": "PASS"
-}`;
+}${rerunComment ? `\n\n---\nEDITOR REVISION NOTE:\n${rerunComment}` : ""}`;
 }

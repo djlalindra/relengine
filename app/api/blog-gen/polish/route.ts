@@ -14,7 +14,7 @@ function parseJson(text: string): unknown {
 }
 
 export async function POST(req: NextRequest) {
-  let body: { draft_markdown?: string; manual_eeat_notes?: string };
+  let body: { draft_markdown?: string; manual_eeat_notes?: string; rerun_comment?: string };
   try {
     body = await req.json();
   } catch {
@@ -38,7 +38,7 @@ export async function POST(req: NextRequest) {
 
         const raw = await callClaude(
           EEAT_SYSTEM,
-          buildEeatPrompt(body.draft_markdown!, body.manual_eeat_notes ?? ""),
+          buildEeatPrompt(body.draft_markdown!, body.manual_eeat_notes ?? "", body.rerun_comment),
           { model: SONNET_5, maxTokens: 10000, signal: controller.signal }
         );
 

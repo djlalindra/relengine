@@ -16,38 +16,180 @@ function parseJson(text: string): unknown {
   return JSON.parse(text.slice(start, end + 1));
 }
 
+// Infer industry-trusted domains from the keyword
+function getIndustryDomains(keyword: string): string[] {
+  const kw = keyword.toLowerCase();
+
+  if (/law firm|solicitor|barrister|legal|attorney|counsel/.test(kw)) {
+    return [
+      "site:americanbar.org",
+      "site:lawsociety.org.uk",
+      "site:sra.org.uk",
+      "site:clio.com",
+      "site:legalweek.com",
+      "site:law.com",
+      "site:lexology.com",
+      "site:acc.com",
+      "site:barstandardsboard.org.uk",
+    ];
+  }
+  if (/healthcare|hospital|medical|clinic|pharma|nhs/.test(kw)) {
+    return [
+      "site:who.int",
+      "site:nih.gov",
+      "site:cdc.gov",
+      "site:nejm.org",
+      "site:bmj.com",
+      "site:nhs.uk",
+      "site:jamanetwork.com",
+    ];
+  }
+  if (/finance|fintech|banking|investment|accounting/.test(kw)) {
+    return [
+      "site:fdic.gov",
+      "site:federalreserve.gov",
+      "site:fsb.org.uk",
+      "site:fca.org.uk",
+      "site:cfainstitute.org",
+      "site:bis.org",
+      "site:imf.org",
+    ];
+  }
+  if (/education|school|university|learning|training/.test(kw)) {
+    return [
+      "site:ed.gov",
+      "site:educause.edu",
+      "site:nces.ed.gov",
+      "site:oecd.org",
+      "site:nesta.org.uk",
+    ];
+  }
+  if (/marketing|seo|content|digital|advertising/.test(kw)) {
+    return [
+      "site:searchengineland.com",
+      "site:moz.com",
+      "site:semrush.com/blog",
+      "site:hubspot.com",
+      "site:contentmarketinginstitute.com",
+      "site:marketingweek.com",
+    ];
+  }
+  if (/real estate|property|housing|mortgage/.test(kw)) {
+    return [
+      "site:nar.realtor",
+      "site:hud.gov",
+      "site:freddiemac.com",
+      "site:fanniemae.com",
+      "site:rics.org",
+    ];
+  }
+
+  // Default: government and education first
+  return [
+    "site:.gov",
+    "site:.edu",
+    "site:who.int",
+    "site:oecd.org",
+    "site:worldbank.org",
+    "site:statista.com",
+  ];
+}
+
 async function findSources(
   placeholders: string[],
   keyword: string,
   signal: AbortSignal
 ): Promise<SourcedClaim[]> {
+  const industryDomains = getIndustryDomains(keyword);
   const results: SourcedClaim[] = [];
-  for (const claim of placeholders.slice(0, 10)) {
+
+  for (const claim of placeholders.slice(0, 12)) {
     try {
-      const query = `${claim} site:.gov OR site:.edu OR site:who.int OR site:nih.gov`;
-      const urls = await getGroundedUrls(query, 3, signal);
-      for (const u of urls) {
+      // Try industry-specific domains first, fall back to broad gov/edu
+      const domainFilter = industryDomains.slice(0, 3).join(" OR ");
+      const query = `${claim} (${domainFilter} OR site:.gov OR site:.edu)`;
+      const urls = await getGroundedUrls(query, 4, signal);
+
+      // Score and pick best source
+      const scored = urls.map((u) => {
         const hostname = new URL(u.resolvedUri || u.uri).hostname;
-        const type: SourcedClaim["source_type"] =
-          hostname.endsWith(".gov")
-            ? "gov"
-            : hostname.endsWith(".edu")
-            ? "edu"
-            : "institutional";
+        const isGov = hostname.endsWith(".gov") || hostname.includes(".gov.");
+        const isEdu = hostname.endsWith(".edu") || hostname.includes(".edu.");
+        const isIndustry = industryDomains.some((d) =>
+          hostname.includes(d.replace("site:", "").replace(/^www\./, ""))
+        );
+        const score = isGov ? 3 : isEdu ? 2 : isIndustry ? 1 : 0;
+        return { u, hostname, score, isGov, isEdu };
+      });
+      scored.sort((a, b) => b.score - a.score);
+
+      const best = scored[0];
+      if (best) {
+        const type: SourcedClaim["source_type"] = best.isGov
+          ? "gov"
+          : best.isEdu
+          ? "edu"
+          : "institutional";
         results.push({
           claim,
-          source_url: u.resolvedUri || u.uri,
-          source_title: u.title || hostname,
+          source_url: best.u.resolvedUri || best.u.uri,
+          source_title: best.u.title || best.hostname,
           source_type: type,
           supports_claim: true,
           year: new Date().getFullYear().toString(),
         });
-        break;
       }
     } catch {
       // skip failed source lookups
     }
   }
+  return results;
+}
+
+async function findStats(
+  keyword: string,
+  draftMarkdown: string,
+  signal: AbortSignal
+): Promise<SourcedClaim[]> {
+  const industryDomains = getIndustryDomains(keyword);
+  const results: SourcedClaim[] = [];
+
+  // Build stat queries — one broad, one industry-specific
+  const statQueries = [
+    `${keyword} statistics data percentage survey report`,
+    `${keyword} statistics ${industryDomains.slice(0, 2).join(" OR ")}`,
+    `${keyword} benchmark study findings`,
+  ];
+
+  for (const query of statQueries) {
+    try {
+      const urls = await getGroundedUrls(query, 3, signal);
+      for (const u of urls) {
+        const hostname = new URL(u.resolvedUri || u.uri).hostname;
+        const isGov = hostname.endsWith(".gov") || hostname.includes(".gov.");
+        const isEdu = hostname.endsWith(".edu") || hostname.includes(".edu.");
+        const type: SourcedClaim["source_type"] = isGov ? "gov" : isEdu ? "edu" : "institutional";
+
+        // Only add if not already in results
+        if (!results.find((r) => r.source_url === (u.resolvedUri || u.uri))) {
+          results.push({
+            claim: `Statistics/data on: ${keyword}`,
+            source_url: u.resolvedUri || u.uri,
+            source_title: u.title || hostname,
+            source_type: type,
+            supports_claim: true,
+            year: new Date().getFullYear().toString(),
+          });
+        }
+        if (results.length >= 6) break;
+      }
+    } catch {
+      // skip
+    }
+    if (results.length >= 6) break;
+  }
+
+  void draftMarkdown;
   return results;
 }
 
@@ -60,7 +202,6 @@ async function findImages(
     const query = `${keyword} chart infographic filetype:png site:.gov OR site:.edu OR site:ourworldindata.org`;
     const urls = await getGroundedUrls(query, 5, signal);
 
-    // Ask Gemini to suggest image placements from the found URLs
     const prompt = `Given these URLs found for the topic "${keyword}", identify which ones likely contain charts, graphs, or infographics that would illustrate the article. For each relevant image URL, provide a caption and Harvard-style attribution.
 
 URLs:
@@ -93,6 +234,7 @@ export async function POST(req: NextRequest) {
     keyword?: string;
     draft_markdown?: string;
     placeholders?: string[];
+    rerun_comment?: string;
   };
   try {
     body = await req.json();
@@ -113,12 +255,21 @@ export async function POST(req: NextRequest) {
       const send = (data: object) => streamController.enqueue(encoder.encode(sse(data)));
 
       try {
-        send({ type: "progress", step: "Finding authoritative sources…" });
+        send({ type: "progress", step: "Finding authoritative sources for claims…" });
         const sourcedClaims = await findSources(
           body.placeholders ?? [],
           body.keyword ?? "",
           controller.signal
         );
+
+        send({ type: "progress", step: "Searching for statistics and data references…" });
+        const statSources = await findStats(
+          body.keyword ?? "",
+          body.draft_markdown ?? "",
+          controller.signal
+        );
+
+        const allSources = [...sourcedClaims, ...statSources];
 
         send({ type: "progress", step: "Searching for charts and images from authoritative sources…" });
         const suggestedImages = await findImages(body.keyword ?? "", controller.signal);
@@ -128,7 +279,8 @@ export async function POST(req: NextRequest) {
           RESEARCH_SYSTEM,
           buildFactCheckPrompt(
             body.draft_markdown ?? "",
-            JSON.stringify(sourcedClaims, null, 2)
+            JSON.stringify(allSources, null, 2),
+            body.rerun_comment
           ),
           { model: SONNET_5, maxTokens: 10000, signal: controller.signal }
         );
@@ -142,7 +294,7 @@ export async function POST(req: NextRequest) {
         send({
           type: "result",
           phase: "factcheck",
-          data: { ...factcheck, sourced_claims: sourcedClaims, suggested_images: suggestedImages },
+          data: { ...factcheck, sourced_claims: allSources, suggested_images: suggestedImages },
         });
       } catch (err) {
         send({ type: "error", error: err instanceof Error ? err.message : "Unknown error" });

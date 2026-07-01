@@ -14,7 +14,7 @@ function parseJson(text: string): unknown {
 }
 
 export async function POST(req: NextRequest) {
-  let body: { final_markdown?: string };
+  let body: { final_markdown?: string; rerun_comment?: string };
   try {
     body = await req.json();
   } catch {
@@ -38,8 +38,8 @@ export async function POST(req: NextRequest) {
 
         const raw = await callClaude(
           CRITIC_SYSTEM,
-          buildCriticPrompt(body.final_markdown!),
-          { model: SONNET_5, maxTokens: 4000, temperature: 0.3, signal: controller.signal }
+          buildCriticPrompt(body.final_markdown!, body.rerun_comment),
+          { model: SONNET_5, maxTokens: 4000, signal: controller.signal }
         );
 
         const result = parseJson(raw);

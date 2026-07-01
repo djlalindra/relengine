@@ -237,6 +237,12 @@ const PHASE_LABELS = [
 
 type PhaseKey = typeof PHASE_LABELS[number]["key"];
 
+type RerunState = {
+  phase: PhaseKey;
+  comment: string;
+  loading: boolean;
+};
+
 export default function BlogGenPage() {
   const [input, setInput] = useState<BlogGenInput>({ keyword: "" });
   const [run, setRun] = useState<BlogGenRun | null>(null);
@@ -250,6 +256,8 @@ export default function BlogGenPage() {
   const [expandedPhase, setExpandedPhase] = useState<string | null>(null);
   const [showHistory, setShowHistory] = useState(false);
   const [exporting, setExporting] = useState(false);
+  const [exportingClean, setExportingClean] = useState(false);
+  const [rerunState, setRerunState] = useState<RerunState | null>(null);
   const abortRef = useRef<AbortController | null>(null);
 
   const updateRun = useCallback((updater: (prev: BlogGenRun) => BlogGenRun) => {
@@ -287,13 +295,11 @@ export default function BlogGenPage() {
     const update = (updater: (prev: BlogGenRun) => BlogGenRun) => updateRun(updater);
 
     try {
-      // Phase: Research (0-5)
       setActivePhase("research");
       const research = await streamPhase(
         "/api/blog-gen/research",
         { ...input, keyword: input.keyword.trim() },
-        progress,
-        abort.signal
+        progress, abort.signal
       ) as { p0?: Phase0Output; p1?: Phase1Output; p2?: Phase2Output; p3?: Phase3Output; p4?: Phase4Output; p5?: Phase5Output };
 
       update((r) => ({
@@ -302,44 +308,29 @@ export default function BlogGenPage() {
         updated_at: new Date().toISOString(),
       }));
 
-      // Phase: Outline (6)
       setActivePhase("outline");
       const outline = await streamPhase(
         "/api/blog-gen/outline",
         { keyword: input.keyword.trim(), research },
-        progress,
-        abort.signal
+        progress, abort.signal
       ) as Phase6Output;
 
       update((r) => ({ ...r, phases: { ...r.phases, p6: outline }, updated_at: new Date().toISOString() }));
 
-      // Phase: Draft (7)
       setActivePhase("draft");
       const draft = await streamPhase(
         "/api/blog-gen/draft",
-        {
-          outline,
-          research,
-          target_word_count: research.p5?.target_word_count ?? 1800,
-          manual_eeat_notes: input.manual_eeat_notes ?? "",
-        },
-        progress,
-        abort.signal
+        { outline, research, target_word_count: research.p5?.target_word_count ?? 1800, manual_eeat_notes: input.manual_eeat_notes ?? "" },
+        progress, abort.signal
       ) as Phase7Output;
 
       update((r) => ({ ...r, phases: { ...r.phases, p7: draft }, updated_at: new Date().toISOString() }));
 
-      // Phase: Fact-check (8-10)
       setActivePhase("factcheck");
       const factcheck = await streamPhase(
         "/api/blog-gen/factcheck",
-        {
-          keyword: input.keyword.trim(),
-          draft_markdown: draft.draft_markdown ?? "",
-          placeholders: draft.placeholders_needing_sources ?? [],
-        },
-        progress,
-        abort.signal
+        { keyword: input.keyword.trim(), draft_markdown: draft.draft_markdown ?? "", placeholders: draft.placeholders_needing_sources ?? [] },
+        progress, abort.signal
       ) as { p9?: Phase9Output; p10?: Phase10Output; corrected_markdown?: string; sourced_claims?: Phase8Output["sourced_claims"]; suggested_images?: SuggestedImage[] };
 
       update((r) => ({
@@ -353,14 +344,13 @@ export default function BlogGenPage() {
         updated_at: new Date().toISOString(),
       }));
 
-      // Fetch images locally
       if (factcheck.suggested_images?.length) {
         progress("Downloading authoritative images…");
         try {
           const imgResp = await fetch("/api/blog-gen/images", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ images: factcheck.suggested_images, run_id: runId }),
+            body: JSON.stringify({ images: factcheck.suggested_images, run_id: newRun.run_id }),
             signal: abort.signal,
           });
           if (imgResp.ok) {
@@ -375,37 +365,31 @@ export default function BlogGenPage() {
 
       const draftForPolish = factcheck.corrected_markdown ?? draft.draft_markdown ?? "";
 
-      // Phase: E-E-A-T (12)
       setActivePhase("polish");
       const eeat = await streamPhase(
         "/api/blog-gen/polish",
         { draft_markdown: draftForPolish, manual_eeat_notes: input.manual_eeat_notes ?? "" },
-        progress,
-        abort.signal
+        progress, abort.signal
       ) as Phase12Output;
 
       update((r) => ({ ...r, phases: { ...r.phases, p12: eeat }, updated_at: new Date().toISOString() }));
 
-      // Phase: Humanize (11.5)
       setActivePhase("humanize");
       const humanized = await streamPhase(
         "/api/blog-gen/humanize",
         { draft_markdown: eeat.revised_markdown ?? draftForPolish },
-        progress,
-        abort.signal
+        progress, abort.signal
       ) as Phase115Output;
 
       update((r) => ({ ...r, phases: { ...r.phases, p115: humanized }, updated_at: new Date().toISOString() }));
 
       const finalMarkdown = humanized.revised_draft ?? eeat.revised_markdown ?? draftForPolish;
 
-      // Phase: Critic (13)
       setActivePhase("critic");
       const critic = await streamPhase(
         "/api/blog-gen/critic",
         { final_markdown: finalMarkdown },
-        progress,
-        abort.signal
+        progress, abort.signal
       ) as Phase13Output;
 
       update((r) => ({
@@ -422,7 +406,110 @@ export default function BlogGenPage() {
       if ((err as Error).name === "AbortError") return;
       setError(err instanceof Error ? err.message : "Pipeline failed.");
       setActivePhase(null);
-      updateRun((r) => ({ ...r, status: "RUNNING", updated_at: new Date().toISOString() }));
+      updateRun((r) => ({ ...r, updated_at: new Date().toISOString() }));
+    }
+  }
+
+  async function rerunPhase(phase: PhaseKey, comment: string) {
+    if (!run) return;
+    setRerunState({ phase, comment, loading: true });
+    setError("");
+
+    const abort = new AbortController();
+    abortRef.current = abort;
+    const progress = (msg: string) => setProgressMsg(msg);
+
+    try {
+      if (phase === "research") {
+        const research = await streamPhase(
+          "/api/blog-gen/research",
+          { ...run.input, keyword: run.keyword, rerun_comment: comment },
+          progress, abort.signal
+        ) as { p0?: Phase0Output; p1?: Phase1Output; p2?: Phase2Output; p3?: Phase3Output; p4?: Phase4Output; p5?: Phase5Output };
+        updateRun((r) => ({
+          ...r,
+          phases: { ...r.phases, p0: research.p0, p1: research.p1, p2: research.p2, p3: research.p3, p4: research.p4, p5: research.p5 },
+          updated_at: new Date().toISOString(),
+        }));
+      } else if (phase === "outline") {
+        const currentResearch = { p0: run.phases.p0, p1: run.phases.p1, p2: run.phases.p2, p3: run.phases.p3, p4: run.phases.p4, p5: run.phases.p5 };
+        const outline = await streamPhase(
+          "/api/blog-gen/outline",
+          { keyword: run.keyword, research: currentResearch, rerun_comment: comment },
+          progress, abort.signal
+        ) as Phase6Output;
+        updateRun((r) => ({ ...r, phases: { ...r.phases, p6: outline }, updated_at: new Date().toISOString() }));
+      } else if (phase === "draft") {
+        const draft = await streamPhase(
+          "/api/blog-gen/draft",
+          {
+            outline: run.phases.p6,
+            research: { p0: run.phases.p0, p1: run.phases.p1, p2: run.phases.p2, p3: run.phases.p3, p4: run.phases.p4, p5: run.phases.p5 },
+            target_word_count: run.phases.p5?.target_word_count ?? 1800,
+            manual_eeat_notes: run.input.manual_eeat_notes ?? "",
+            rerun_comment: comment,
+          },
+          progress, abort.signal
+        ) as Phase7Output;
+        updateRun((r) => ({ ...r, phases: { ...r.phases, p7: draft }, updated_at: new Date().toISOString() }));
+      } else if (phase === "factcheck") {
+        const factcheck = await streamPhase(
+          "/api/blog-gen/factcheck",
+          {
+            keyword: run.keyword,
+            draft_markdown: run.phases.p7?.draft_markdown ?? "",
+            placeholders: run.phases.p7?.placeholders_needing_sources ?? [],
+            rerun_comment: comment,
+          },
+          progress, abort.signal
+        ) as { p9?: Phase9Output; p10?: Phase10Output; corrected_markdown?: string; sourced_claims?: Phase8Output["sourced_claims"]; suggested_images?: SuggestedImage[] };
+        updateRun((r) => ({
+          ...r,
+          phases: {
+            ...r.phases,
+            p8: { sourced_claims: factcheck.sourced_claims ?? [], suggested_images: factcheck.suggested_images ?? [] },
+            p9: factcheck.p9,
+            p10: factcheck.p10,
+          },
+          updated_at: new Date().toISOString(),
+        }));
+      } else if (phase === "polish") {
+        const draftMd = run.phases.p7?.draft_markdown ?? "";
+        const eeat = await streamPhase(
+          "/api/blog-gen/polish",
+          { draft_markdown: draftMd, manual_eeat_notes: run.input.manual_eeat_notes ?? "", rerun_comment: comment },
+          progress, abort.signal
+        ) as Phase12Output;
+        updateRun((r) => ({ ...r, phases: { ...r.phases, p12: eeat }, updated_at: new Date().toISOString() }));
+      } else if (phase === "humanize") {
+        const draftMd = run.phases.p12?.revised_markdown ?? run.phases.p7?.draft_markdown ?? "";
+        const humanized = await streamPhase(
+          "/api/blog-gen/humanize",
+          { draft_markdown: draftMd, rerun_comment: comment },
+          progress, abort.signal
+        ) as Phase115Output;
+        updateRun((r) => ({ ...r, phases: { ...r.phases, p115: humanized }, updated_at: new Date().toISOString() }));
+      } else if (phase === "critic") {
+        const finalMd = run.phases.p115?.revised_draft ?? run.phases.p12?.revised_markdown ?? run.phases.p7?.draft_markdown ?? "";
+        const critic = await streamPhase(
+          "/api/blog-gen/critic",
+          { final_markdown: finalMd, rerun_comment: comment },
+          progress, abort.signal
+        ) as Phase13Output;
+        updateRun((r) => ({
+          ...r,
+          phases: { ...r.phases, p13: critic },
+          final_markdown: finalMd,
+          status: critic.gate_result === "PASS" ? "COMPLETE" : "FAILED_QA_GATE",
+          updated_at: new Date().toISOString(),
+        }));
+      }
+    } catch (err) {
+      if ((err as Error).name === "AbortError") return;
+      setError(err instanceof Error ? err.message : `Rerun of ${phase} failed.`);
+    } finally {
+      setRerunState(null);
+      setProgressMsg("");
     }
   }
 
@@ -430,33 +517,35 @@ export default function BlogGenPage() {
     abortRef.current?.abort();
     setActivePhase(null);
     setProgressMsg("");
+    setRerunState(null);
   }
 
-  async function exportDocx(r: BlogGenRun) {
-    setExporting(true);
+  async function exportDocx(r: BlogGenRun, cleanOnly = false) {
+    if (cleanOnly) setExportingClean(true);
+    else setExporting(true);
     try {
       const resp = await fetch("/api/blog-gen/export", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ run: r }),
+        body: JSON.stringify({ run: r, clean_only: cleanOnly }),
       });
       if (!resp.ok) throw new Error("Export failed");
       const blob = await resp.blob();
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = url;
-      a.download = `blog-${slug(r.keyword)}.docx`;
+      const prefix = cleanOnly ? "article" : "blog";
+      a.download = `${prefix}-${slug(r.keyword)}.docx`;
       a.click();
       URL.revokeObjectURL(url);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Export failed.");
     } finally {
       setExporting(false);
+      setExportingClean(false);
     }
   }
 
-  const currentPhaseIndex = activePhase ? PHASE_LABELS.findIndex((p) => p.key === activePhase) : -1;
-  void currentPhaseIndex;
   const completedPhases = run
     ? PHASE_LABELS.filter((p) => {
         if (p.key === "research") return !!run.phases.p0;
@@ -470,6 +559,8 @@ export default function BlogGenPage() {
       }).map((p) => p.key)
     : [];
 
+  const isRunning = !!activePhase || rerunState?.loading;
+
   return (
     <div className="flex min-h-screen bg-[var(--background)]">
       {/* Sidebar — history */}
@@ -479,26 +570,14 @@ export default function BlogGenPage() {
           <button onClick={() => setShowHistory(false)} className="text-[var(--muted)] hover:text-[var(--foreground)] text-lg">×</button>
         </div>
         <div className="flex-1 overflow-y-auto p-2 space-y-1">
-          {history.length === 0 && (
-            <p className="text-xs text-[var(--muted)] p-3">No runs yet.</p>
-          )}
+          {history.length === 0 && <p className="text-xs text-[var(--muted)] p-3">No runs yet.</p>}
           {history.map((h) => (
             <div key={h.run_id} className="group rounded-lg border border-[var(--border)] p-3 hover:bg-slate-50 cursor-pointer" onClick={() => { setRun(h); setShowHistory(false); }}>
               <p className="text-sm font-medium text-[var(--foreground)] truncate">{h.keyword}</p>
               <p className="text-xs text-[var(--muted)]">{new Date(h.created_at).toLocaleDateString()} · {h.status}</p>
               <div className="mt-2 flex gap-1 opacity-0 group-hover:opacity-100 transition">
-                <button
-                  onClick={(e) => { e.stopPropagation(); exportDocx(h); }}
-                  className="text-xs px-2 py-0.5 rounded border border-[var(--border)] text-[var(--muted)] hover:text-[var(--foreground)]"
-                >
-                  .docx
-                </button>
-                <button
-                  onClick={(e) => { e.stopPropagation(); deleteRun(h.run_id); setHistory(loadHistory()); if (run?.run_id === h.run_id) setRun(null); }}
-                  className="text-xs px-2 py-0.5 rounded border border-red-200 text-red-500 hover:bg-red-50"
-                >
-                  Delete
-                </button>
+                <button onClick={(e) => { e.stopPropagation(); exportDocx(h); }} className="text-xs px-2 py-0.5 rounded border border-[var(--border)] text-[var(--muted)] hover:text-[var(--foreground)]">.docx</button>
+                <button onClick={(e) => { e.stopPropagation(); deleteRun(h.run_id); setHistory(loadHistory()); if (run?.run_id === h.run_id) setRun(null); }} className="text-xs px-2 py-0.5 rounded border border-red-200 text-red-500 hover:bg-red-50">Delete</button>
               </div>
             </div>
           ))}
@@ -528,64 +607,28 @@ export default function BlogGenPage() {
           <div className="rounded-xl border border-[var(--border)] bg-[var(--card)] p-6 space-y-4">
             <div>
               <label className="block text-xs font-medium text-[var(--muted)] mb-1">Keyword / Topic *</label>
-              <input
-                type="text"
-                value={input.keyword}
-                onChange={(e) => setInput((p) => ({ ...p, keyword: e.target.value }))}
-                placeholder="e.g. best CRM software for small businesses"
-                className="w-full rounded-lg border border-[var(--border)] bg-white px-3 py-2 text-sm text-[var(--foreground)] outline-none focus:border-[var(--accent)] focus:ring-2 focus:ring-[var(--accent-soft)]"
-                onKeyDown={(e) => { if (e.key === "Enter") runFullPipeline(); }}
-              />
+              <input type="text" value={input.keyword} onChange={(e) => setInput((p) => ({ ...p, keyword: e.target.value }))} placeholder="e.g. best CRM software for small businesses" className="w-full rounded-lg border border-[var(--border)] bg-white px-3 py-2 text-sm text-[var(--foreground)] outline-none focus:border-[var(--accent)] focus:ring-2 focus:ring-[var(--accent-soft)]" onKeyDown={(e) => { if (e.key === "Enter") runFullPipeline(); }} />
             </div>
             <div className="grid grid-cols-2 gap-3">
               <div>
                 <label className="block text-xs font-medium text-[var(--muted)] mb-1">Target Audience</label>
-                <input
-                  type="text"
-                  value={input.target_audience ?? ""}
-                  onChange={(e) => setInput((p) => ({ ...p, target_audience: e.target.value }))}
-                  placeholder="e.g. startup founders"
-                  className="w-full rounded-lg border border-[var(--border)] bg-white px-3 py-2 text-sm text-[var(--foreground)] outline-none focus:border-[var(--accent)]"
-                />
+                <input type="text" value={input.target_audience ?? ""} onChange={(e) => setInput((p) => ({ ...p, target_audience: e.target.value }))} placeholder="e.g. startup founders" className="w-full rounded-lg border border-[var(--border)] bg-white px-3 py-2 text-sm text-[var(--foreground)] outline-none focus:border-[var(--accent)]" />
               </div>
               <div>
                 <label className="block text-xs font-medium text-[var(--muted)] mb-1">Business Context</label>
-                <input
-                  type="text"
-                  value={input.business_context ?? ""}
-                  onChange={(e) => setInput((p) => ({ ...p, business_context: e.target.value }))}
-                  placeholder="e.g. SaaS company selling CRM"
-                  className="w-full rounded-lg border border-[var(--border)] bg-white px-3 py-2 text-sm text-[var(--foreground)] outline-none focus:border-[var(--accent)]"
-                />
+                <input type="text" value={input.business_context ?? ""} onChange={(e) => setInput((p) => ({ ...p, business_context: e.target.value }))} placeholder="e.g. SaaS company selling CRM" className="w-full rounded-lg border border-[var(--border)] bg-white px-3 py-2 text-sm text-[var(--foreground)] outline-none focus:border-[var(--accent)]" />
               </div>
             </div>
             <div>
-              <label className="block text-xs font-medium text-[var(--muted)] mb-1">Existing URL <span className="text-[var(--muted)] font-normal">(optional — to analyze existing page)</span></label>
-              <input
-                type="url"
-                value={input.existing_url ?? ""}
-                onChange={(e) => setInput((p) => ({ ...p, existing_url: e.target.value }))}
-                placeholder="https://yoursite.com/existing-article"
-                className="w-full rounded-lg border border-[var(--border)] bg-white px-3 py-2 text-sm text-[var(--foreground)] outline-none focus:border-[var(--accent)]"
-              />
+              <label className="block text-xs font-medium text-[var(--muted)] mb-1">Existing URL <span className="font-normal text-[var(--muted)]">(optional)</span></label>
+              <input type="url" value={input.existing_url ?? ""} onChange={(e) => setInput((p) => ({ ...p, existing_url: e.target.value }))} placeholder="https://yoursite.com/existing-article" className="w-full rounded-lg border border-[var(--border)] bg-white px-3 py-2 text-sm text-[var(--foreground)] outline-none focus:border-[var(--accent)]" />
             </div>
             <div>
-              <label className="block text-xs font-medium text-[var(--muted)] mb-1">E-E-A-T Notes <span className="text-[var(--muted)] font-normal">(personal experience, credentials, case results — woven in verbatim)</span></label>
-              <textarea
-                value={input.manual_eeat_notes ?? ""}
-                onChange={(e) => setInput((p) => ({ ...p, manual_eeat_notes: e.target.value }))}
-                placeholder="e.g. We ran this exact test across 12 clients in 2024 and found..."
-                rows={3}
-                className="w-full rounded-lg border border-[var(--border)] bg-white px-3 py-2 text-sm text-[var(--foreground)] outline-none focus:border-[var(--accent)] resize-none"
-              />
+              <label className="block text-xs font-medium text-[var(--muted)] mb-1">E-E-A-T Notes <span className="font-normal text-[var(--muted)]">(personal experience, credentials — woven in verbatim)</span></label>
+              <textarea value={input.manual_eeat_notes ?? ""} onChange={(e) => setInput((p) => ({ ...p, manual_eeat_notes: e.target.value }))} placeholder="e.g. We ran this exact test across 12 clients in 2024 and found..." rows={3} className="w-full rounded-lg border border-[var(--border)] bg-white px-3 py-2 text-sm text-[var(--foreground)] outline-none focus:border-[var(--accent)] resize-none" />
             </div>
             {error && <p className="text-sm text-red-600">{error}</p>}
-            <button
-              onClick={runFullPipeline}
-              className="w-full rounded-lg bg-[var(--accent)] py-2.5 text-sm font-medium text-white hover:bg-blue-700 transition"
-            >
-              Generate Article
-            </button>
+            <button onClick={runFullPipeline} className="w-full rounded-lg bg-[var(--accent)] py-2.5 text-sm font-medium text-white hover:bg-blue-700 transition">Generate Article</button>
           </div>
         )}
 
@@ -598,27 +641,23 @@ export default function BlogGenPage() {
                 <h2 className="text-base font-semibold text-[var(--foreground)]">{run.keyword}</h2>
                 <p className="text-xs text-[var(--muted)]">{run.status} · {new Date(run.created_at).toLocaleString()}</p>
               </div>
-              <div className="flex gap-2">
-                {activePhase && (
-                  <button onClick={stopPipeline} className="text-sm px-3 py-1.5 rounded-lg border border-red-200 text-red-600 hover:bg-red-50">
-                    Stop
-                  </button>
+              <div className="flex gap-2 flex-wrap justify-end">
+                {isRunning && (
+                  <button onClick={stopPipeline} className="text-sm px-3 py-1.5 rounded-lg border border-red-200 text-red-600 hover:bg-red-50">Stop</button>
                 )}
-                {!activePhase && (
+                {!isRunning && (
                   <>
-                    <button
-                      onClick={() => exportDocx(run)}
-                      disabled={exporting}
-                      className="text-sm px-3 py-1.5 rounded-lg border border-[var(--border)] text-[var(--muted)] hover:text-[var(--foreground)] disabled:opacity-50"
-                    >
-                      {exporting ? "Exporting…" : "Download .docx"}
-                    </button>
-                    <button
-                      onClick={() => { setRun(null); setInput({ keyword: "" }); setError(""); }}
-                      className="text-sm px-3 py-1.5 rounded-lg bg-[var(--accent)] text-white hover:bg-blue-700"
-                    >
-                      New run
-                    </button>
+                    {run.final_markdown && (
+                      <>
+                        <button onClick={() => exportDocx(run, true)} disabled={exportingClean} className="text-sm px-3 py-1.5 rounded-lg border border-green-200 text-green-700 hover:bg-green-50 disabled:opacity-50">
+                          {exportingClean ? "Exporting…" : "Download Article .docx"}
+                        </button>
+                        <button onClick={() => exportDocx(run, false)} disabled={exporting} className="text-sm px-3 py-1.5 rounded-lg border border-[var(--border)] text-[var(--muted)] hover:text-[var(--foreground)] disabled:opacity-50">
+                          {exporting ? "Exporting…" : "Full Report .docx"}
+                        </button>
+                      </>
+                    )}
+                    <button onClick={() => { setRun(null); setInput({ keyword: "" }); setError(""); }} className="text-sm px-3 py-1.5 rounded-lg bg-[var(--accent)] text-white hover:bg-blue-700">New run</button>
                   </>
                 )}
               </div>
@@ -629,14 +668,10 @@ export default function BlogGenPage() {
               <div className="flex gap-2 flex-wrap">
                 {PHASE_LABELS.map((p, i) => {
                   const isDone = completedPhases.includes(p.key);
-                  const isActive = activePhase === p.key;
+                  const isActive = activePhase === p.key || rerunState?.phase === p.key;
                   return (
                     <div key={p.key} className="flex items-center gap-1.5">
-                      <div className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition ${
-                        isDone ? "bg-green-50 text-green-700 border border-green-200" :
-                        isActive ? "bg-[var(--accent-soft)] text-[var(--accent)] border border-[var(--accent)]" :
-                        "bg-slate-50 text-[var(--muted)] border border-[var(--border)]"
-                      }`}>
+                      <div className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition ${isDone ? "bg-green-50 text-green-700 border border-green-200" : isActive ? "bg-[var(--accent-soft)] text-[var(--accent)] border border-[var(--accent)]" : "bg-slate-50 text-[var(--muted)] border border-[var(--border)]"}`}>
                         {isDone ? "✓" : isActive ? "⟳" : String(i + 1)} {p.label}
                       </div>
                       {i < PHASE_LABELS.length - 1 && <span className="text-[var(--muted)] text-xs">→</span>}
@@ -644,19 +679,15 @@ export default function BlogGenPage() {
                   );
                 })}
               </div>
-              {progressMsg && (
-                <p className="mt-3 text-xs text-[var(--muted)] animate-pulse">{progressMsg}</p>
-              )}
+              {progressMsg && <p className="mt-3 text-xs text-[var(--muted)] animate-pulse">{progressMsg}</p>}
             </div>
 
             {/* QA Gate result */}
             {run.phases.p13 && (
               <div className={`rounded-xl border p-4 ${run.phases.p13.gate_result === "PASS" ? "border-green-200 bg-green-50" : "border-amber-200 bg-amber-50"}`}>
                 <div className="flex items-center gap-2 mb-2">
-                  <span className={`text-sm font-semibold ${run.phases.p13.gate_result === "PASS" ? "text-green-700" : "text-amber-700"}`}>
-                    QA Gate: {run.phases.p13.gate_result}
-                  </span>
-                  <span className="text-xs text-[var(--muted)]">Humanize signal band: {run.phases.p115?.band ?? "—"} ({run.phases.p115?.post_edit_signal_score ?? "—"}/100)</span>
+                  <span className={`text-sm font-semibold ${run.phases.p13.gate_result === "PASS" ? "text-green-700" : "text-amber-700"}`}>QA Gate: {run.phases.p13.gate_result}</span>
+                  <span className="text-xs text-[var(--muted)]">AI signal: {run.phases.p115?.band ?? "—"} ({run.phases.p115?.post_edit_signal_score ?? "—"}/100)</span>
                 </div>
                 {run.phases.p13.failing_items?.length > 0 && (
                   <ul className="text-xs text-amber-700 space-y-0.5 list-disc list-inside">
@@ -666,10 +697,10 @@ export default function BlogGenPage() {
               </div>
             )}
 
-            {/* Phase output panels */}
+            {/* Phase panels */}
             <div className="space-y-3">
 
-              {/* ── Research ── */}
+              {/* Research */}
               {run.phases.p5 && (
                 <PhasePanel
                   title="Research"
@@ -677,169 +708,19 @@ export default function BlogGenPage() {
                   expanded={expandedPhase === "research"}
                   onToggle={() => setExpandedPhase(expandedPhase === "research" ? null : "research")}
                   onDownload={() => downloadText(`research-${slug(run.keyword)}.txt`, buildResearchDownload(run))}
+                  onRerun={!isRunning ? () => setRerunState({ phase: "research", comment: "", loading: false }) : undefined}
+                  rerunActive={rerunState?.phase === "research"}
+                  rerunComment={rerunState?.phase === "research" ? rerunState.comment : ""}
+                  onRerunCommentChange={(c) => setRerunState((s) => s ? { ...s, comment: c } : s)}
+                  onRerunSubmit={() => { if (rerunState) rerunPhase("research", rerunState.comment); }}
+                  onRerunCancel={() => setRerunState(null)}
+                  rerunLoading={rerunState?.phase === "research" && rerunState.loading}
                 >
-                  <div className="space-y-5 text-sm">
-
-                    {/* Intent */}
-                    {run.phases.p0 && (
-                      <ReasoningBlock title="Intent Analysis" color="blue">
-                        <p className="text-[var(--foreground)] font-medium mb-1">{run.phases.p0.primary_intent}</p>
-                        <p className="text-xs text-[var(--muted)] mb-2">{run.phases.p0.scope_note}</p>
-                        <div className="flex flex-wrap gap-1">
-                          {run.phases.p0.sub_intents?.map((s, i) => (
-                            <span key={i} className="text-xs px-2 py-0.5 rounded-full bg-blue-50 text-blue-700">{s}</span>
-                          ))}
-                        </div>
-                      </ReasoningBlock>
-                    )}
-
-                    {/* Entities & clusters */}
-                    {run.phases.p1 && (
-                      <ReasoningBlock title="Entities & Semantic Clusters" color="purple">
-                        <div className="mb-2">
-                          <p className="text-xs text-[var(--muted)] mb-1">Core entities</p>
-                          <div className="flex flex-wrap gap-1">
-                            {run.phases.p1.core_entities?.map((e, i) => (
-                              <span key={i} className="text-xs px-2 py-0.5 rounded-full bg-purple-50 text-purple-700">{e}</span>
-                            ))}
-                          </div>
-                        </div>
-                        {run.phases.p1.semantic_clusters?.map((c, i) => (
-                          <div key={i} className="mt-2">
-                            <p className="text-xs font-medium text-[var(--muted)]">[{c.cluster}]</p>
-                            <div className="flex flex-wrap gap-1 mt-0.5">
-                              {c.terms.map((t, j) => (
-                                <span key={j} className="text-xs px-2 py-0.5 rounded-full bg-slate-100 text-[var(--muted)]">{t}</span>
-                              ))}
-                            </div>
-                          </div>
-                        ))}
-                        {run.phases.p1.notably_absent_from_competitors?.length ? (
-                          <div className="mt-2">
-                            <p className="text-xs text-[var(--muted)] mb-1">Notably absent from competitors</p>
-                            <div className="flex flex-wrap gap-1">
-                              {run.phases.p1.notably_absent_from_competitors.map((e, i) => (
-                                <span key={i} className="text-xs px-2 py-0.5 rounded-full bg-amber-50 text-amber-700">{e}</span>
-                              ))}
-                            </div>
-                          </div>
-                        ) : null}
-                      </ReasoningBlock>
-                    )}
-
-                    {/* Fan-out queries */}
-                    {run.phases.p2?.fanout_queries && (
-                      <ReasoningBlock title={`Fan-out Queries (${run.phases.p2.fanout_queries.length})`} color="teal">
-                        <p className="text-xs text-[var(--muted)] mb-2">These are the sub-questions Gemini used to map the full information space around your keyword.</p>
-                        <ol className="space-y-1">
-                          {run.phases.p2.fanout_queries.map((q, i) => (
-                            <li key={i} className="flex gap-2">
-                              <span className="text-xs text-teal-500 font-medium flex-shrink-0">{i + 1}.</span>
-                              <span className="text-xs text-[var(--foreground)]">{q}</span>
-                            </li>
-                          ))}
-                        </ol>
-                      </ReasoningBlock>
-                    )}
-
-                    {/* SERP & competitors */}
-                    {run.phases.p3 && (
-                      <ReasoningBlock title="SERP & Competitor Analysis" color="orange">
-                        <div className="grid grid-cols-3 gap-3 mb-3">
-                          <div className="rounded-lg bg-orange-50 p-2 text-center">
-                            <p className="text-xs text-[var(--muted)]">Avg word count</p>
-                            <p className="text-sm font-semibold text-orange-700">{run.phases.p3.serp_patterns?.avg_word_count ?? "—"}</p>
-                          </div>
-                          <div className="rounded-lg bg-orange-50 p-2 text-center col-span-2">
-                            <p className="text-xs text-[var(--muted)]">Common format</p>
-                            <p className="text-xs font-medium text-orange-700">{run.phases.p3.serp_patterns?.common_format ?? "—"}</p>
-                          </div>
-                        </div>
-                        <p className="text-xs text-[var(--muted)] mb-0.5">Common H1 pattern</p>
-                        <p className="text-xs text-[var(--foreground)] mb-3 italic">"{run.phases.p3.serp_patterns?.common_h1_pattern}"</p>
-                        {run.phases.p3.ai_overview_summary && (
-                          <div className="mb-3">
-                            <p className="text-xs text-[var(--muted)] mb-0.5">AI Overview / SGE summary</p>
-                            <p className="text-xs text-[var(--foreground)]">{run.phases.p3.ai_overview_summary}</p>
-                          </div>
-                        )}
-                        {run.phases.p3.leading_angle_per_competitor?.length ? (
-                          <div>
-                            <p className="text-xs text-[var(--muted)] mb-1">Competitor angles</p>
-                            <div className="space-y-1.5">
-                              {run.phases.p3.leading_angle_per_competitor.map((c, i) => (
-                                <div key={i} className="flex gap-2 items-start">
-                                  <span className="text-xs text-[var(--muted)] flex-shrink-0 w-4">{i + 1}.</span>
-                                  <div>
-                                    <p className="text-xs font-medium text-[var(--foreground)] truncate max-w-xs">{c.source}</p>
-                                    <p className="text-xs text-[var(--muted)]">{c.angle}</p>
-                                  </div>
-                                </div>
-                              ))}
-                            </div>
-                          </div>
-                        ) : null}
-                      </ReasoningBlock>
-                    )}
-
-                    {/* Gap analysis */}
-                    {run.phases.p4 && (
-                      <ReasoningBlock title="Coverage Gap Analysis" color="red">
-                        {run.phases.p4.fully_covered?.length ? (
-                          <div className="mb-2">
-                            <p className="text-xs text-[var(--muted)] mb-1">Fully covered by competitors</p>
-                            <div className="flex flex-wrap gap-1">
-                              {run.phases.p4.fully_covered.map((t, i) => (
-                                <span key={i} className="text-xs px-2 py-0.5 rounded-full bg-slate-100 text-[var(--muted)] line-through">{t}</span>
-                              ))}
-                            </div>
-                          </div>
-                        ) : null}
-                        {run.phases.p4.partially_covered?.length ? (
-                          <div className="mb-2">
-                            <p className="text-xs text-[var(--muted)] mb-1">Partially covered</p>
-                            <div className="flex flex-wrap gap-1">
-                              {run.phases.p4.partially_covered.map((t, i) => (
-                                <span key={i} className="text-xs px-2 py-0.5 rounded-full bg-amber-50 text-amber-700">{t}</span>
-                              ))}
-                            </div>
-                          </div>
-                        ) : null}
-                        {run.phases.p4.gaps?.length ? (
-                          <div>
-                            <p className="text-xs text-[var(--muted)] mb-1">Gaps — your opportunity</p>
-                            <ul className="space-y-1.5">
-                              {run.phases.p4.gaps.map((g, i) => (
-                                <li key={i} className="rounded-lg bg-red-50 p-2">
-                                  <p className="text-xs font-medium text-red-700">{g.topic}</p>
-                                  <p className="text-xs text-red-600">{g.why_it_matters}</p>
-                                </li>
-                              ))}
-                            </ul>
-                          </div>
-                        ) : null}
-                      </ReasoningBlock>
-                    )}
-
-                    {/* Differentiation decision */}
-                    <ReasoningBlock title="Differentiation Decision" color="green">
-                      <p className="text-xs text-[var(--muted)] mb-1">Angle chosen</p>
-                      <p className="text-sm font-medium text-[var(--foreground)] mb-3">{run.phases.p5.angle_statement}</p>
-                      <p className="text-xs text-[var(--muted)] mb-1">Why this angle wins</p>
-                      <ul className="space-y-1">
-                        {run.phases.p5.differentiation_points?.map((d, i) => (
-                          <li key={i} className="flex gap-2 text-xs text-[var(--foreground)]">
-                            <span className="text-green-500 flex-shrink-0">✓</span>{d}
-                          </li>
-                        ))}
-                      </ul>
-                      <p className="text-xs text-[var(--muted)] mt-2">Target word count: <span className="font-medium text-[var(--foreground)]">{run.phases.p5.target_word_count}</span></p>
-                    </ReasoningBlock>
-                  </div>
+                  <ResearchContent run={run} />
                 </PhasePanel>
               )}
 
-              {/* ── Outline ── */}
+              {/* Outline */}
               {run.phases.p6 && (
                 <PhasePanel
                   title="Outline"
@@ -847,6 +728,13 @@ export default function BlogGenPage() {
                   expanded={expandedPhase === "outline"}
                   onToggle={() => setExpandedPhase(expandedPhase === "outline" ? null : "outline")}
                   onDownload={() => downloadText(`outline-${slug(run.keyword)}.txt`, buildOutlineDownload(run))}
+                  onRerun={!isRunning ? () => setRerunState({ phase: "outline", comment: "", loading: false }) : undefined}
+                  rerunActive={rerunState?.phase === "outline"}
+                  rerunComment={rerunState?.phase === "outline" ? rerunState.comment : ""}
+                  onRerunCommentChange={(c) => setRerunState((s) => s ? { ...s, comment: c } : s)}
+                  onRerunSubmit={() => { if (rerunState) rerunPhase("outline", rerunState.comment); }}
+                  onRerunCancel={() => setRerunState(null)}
+                  rerunLoading={rerunState?.phase === "outline" && rerunState.loading}
                 >
                   <div className="text-sm space-y-2">
                     <p className="font-semibold text-[var(--foreground)]">H1: {run.phases.p6.h1}</p>
@@ -860,7 +748,7 @@ export default function BlogGenPage() {
                 </PhasePanel>
               )}
 
-              {/* ── Draft ── */}
+              {/* Draft */}
               {run.phases.p7 && (
                 <PhasePanel
                   title="Draft"
@@ -868,6 +756,13 @@ export default function BlogGenPage() {
                   expanded={expandedPhase === "draft"}
                   onToggle={() => setExpandedPhase(expandedPhase === "draft" ? null : "draft")}
                   onDownload={() => downloadText(`draft-${slug(run.keyword)}.md`, run.phases.p7?.draft_markdown ?? "")}
+                  onRerun={!isRunning ? () => setRerunState({ phase: "draft", comment: "", loading: false }) : undefined}
+                  rerunActive={rerunState?.phase === "draft"}
+                  rerunComment={rerunState?.phase === "draft" ? rerunState.comment : ""}
+                  onRerunCommentChange={(c) => setRerunState((s) => s ? { ...s, comment: c } : s)}
+                  onRerunSubmit={() => { if (rerunState) rerunPhase("draft", rerunState.comment); }}
+                  onRerunCancel={() => setRerunState(null)}
+                  rerunLoading={rerunState?.phase === "draft" && rerunState.loading}
                 >
                   <pre className="text-xs font-mono bg-slate-50 rounded-lg p-4 overflow-x-auto whitespace-pre-wrap text-[var(--foreground)] max-h-[400px] overflow-y-auto">
                     {run.phases.p7.draft_markdown}
@@ -883,7 +778,7 @@ export default function BlogGenPage() {
                 </PhasePanel>
               )}
 
-              {/* ── Fact-check / sources ── */}
+              {/* Sources */}
               {run.phases.p10 && (
                 <PhasePanel
                   title="Sources & References"
@@ -891,6 +786,13 @@ export default function BlogGenPage() {
                   expanded={expandedPhase === "factcheck"}
                   onToggle={() => setExpandedPhase(expandedPhase === "factcheck" ? null : "factcheck")}
                   onDownload={() => downloadText(`sources-${slug(run.keyword)}.txt`, buildSourcesDownload(run))}
+                  onRerun={!isRunning ? () => setRerunState({ phase: "factcheck", comment: "", loading: false }) : undefined}
+                  rerunActive={rerunState?.phase === "factcheck"}
+                  rerunComment={rerunState?.phase === "factcheck" ? rerunState.comment : ""}
+                  onRerunCommentChange={(c) => setRerunState((s) => s ? { ...s, comment: c } : s)}
+                  onRerunSubmit={() => { if (rerunState) rerunPhase("factcheck", rerunState.comment); }}
+                  onRerunCancel={() => setRerunState(null)}
+                  rerunLoading={rerunState?.phase === "factcheck" && rerunState.loading}
                 >
                   <div className="text-sm space-y-3">
                     {run.phases.p9?.corrections_needed?.length ? (
@@ -933,7 +835,7 @@ export default function BlogGenPage() {
                 </PhasePanel>
               )}
 
-              {/* ── E-E-A-T ── */}
+              {/* E-E-A-T */}
               {run.phases.p12 && (
                 <PhasePanel
                   title="E-E-A-T"
@@ -941,32 +843,33 @@ export default function BlogGenPage() {
                   expanded={expandedPhase === "eeat"}
                   onToggle={() => setExpandedPhase(expandedPhase === "eeat" ? null : "eeat")}
                   onDownload={() => downloadText(`eeat-${slug(run.keyword)}.md`, run.phases.p12?.revised_markdown ?? "")}
+                  onRerun={!isRunning ? () => setRerunState({ phase: "polish", comment: "", loading: false }) : undefined}
+                  rerunActive={rerunState?.phase === "polish"}
+                  rerunComment={rerunState?.phase === "polish" ? rerunState.comment : ""}
+                  onRerunCommentChange={(c) => setRerunState((s) => s ? { ...s, comment: c } : s)}
+                  onRerunSubmit={() => { if (rerunState) rerunPhase("polish", rerunState.comment); }}
+                  onRerunCancel={() => setRerunState(null)}
+                  rerunLoading={rerunState?.phase === "polish" && rerunState.loading}
                 >
                   <div className="text-sm space-y-3">
                     {run.phases.p12.eeat_notes?.length ? (
                       <div>
                         <p className="text-xs font-medium text-[var(--muted)] mb-1">E-E-A-T signals added</p>
-                        <ul className="list-disc list-inside space-y-0.5 text-[var(--foreground)] text-xs">
-                          {run.phases.p12.eeat_notes.map((n, i) => <li key={i}>{n}</li>)}
-                        </ul>
+                        <ul className="list-disc list-inside space-y-0.5 text-[var(--foreground)] text-xs">{run.phases.p12.eeat_notes.map((n, i) => <li key={i}>{n}</li>)}</ul>
                       </div>
                     ) : null}
                     {run.phases.p12.adjustments_made?.length ? (
                       <div>
                         <p className="text-xs font-medium text-[var(--muted)] mb-1">Adjustments made</p>
-                        <ul className="list-disc list-inside space-y-0.5 text-[var(--foreground)] text-xs">
-                          {run.phases.p12.adjustments_made.map((a, i) => <li key={i}>{a}</li>)}
-                        </ul>
+                        <ul className="list-disc list-inside space-y-0.5 text-[var(--foreground)] text-xs">{run.phases.p12.adjustments_made.map((a, i) => <li key={i}>{a}</li>)}</ul>
                       </div>
                     ) : null}
-                    <pre className="text-xs font-mono bg-slate-50 rounded-lg p-4 overflow-x-auto whitespace-pre-wrap text-[var(--foreground)] max-h-[300px] overflow-y-auto">
-                      {run.phases.p12.revised_markdown}
-                    </pre>
+                    <pre className="text-xs font-mono bg-slate-50 rounded-lg p-4 overflow-x-auto whitespace-pre-wrap text-[var(--foreground)] max-h-[300px] overflow-y-auto">{run.phases.p12.revised_markdown}</pre>
                   </div>
                 </PhasePanel>
               )}
 
-              {/* ── Humanize ── */}
+              {/* Humanize */}
               {run.phases.p115 && (
                 <PhasePanel
                   title="Humanize"
@@ -974,6 +877,13 @@ export default function BlogGenPage() {
                   expanded={expandedPhase === "humanize"}
                   onToggle={() => setExpandedPhase(expandedPhase === "humanize" ? null : "humanize")}
                   onDownload={() => downloadText(`humanized-${slug(run.keyword)}.md`, run.phases.p115?.revised_draft ?? "")}
+                  onRerun={!isRunning ? () => setRerunState({ phase: "humanize", comment: "", loading: false }) : undefined}
+                  rerunActive={rerunState?.phase === "humanize"}
+                  rerunComment={rerunState?.phase === "humanize" ? rerunState.comment : ""}
+                  onRerunCommentChange={(c) => setRerunState((s) => s ? { ...s, comment: c } : s)}
+                  onRerunSubmit={() => { if (rerunState) rerunPhase("humanize", rerunState.comment); }}
+                  onRerunCancel={() => setRerunState(null)}
+                  rerunLoading={rerunState?.phase === "humanize" && rerunState.loading}
                 >
                   <div className="text-sm space-y-3">
                     <div className="grid grid-cols-3 gap-3">
@@ -994,20 +904,39 @@ export default function BlogGenPage() {
                       <div>
                         <p className="text-xs font-medium text-[var(--muted)] mb-1">AI tells removed</p>
                         <div className="flex flex-wrap gap-1">
-                          {run.phases.p115.categories_fixed.map((c, i) => (
-                            <span key={i} className="text-xs px-2 py-0.5 rounded-full bg-green-50 text-green-700">{c}</span>
-                          ))}
+                          {run.phases.p115.categories_fixed.map((c, i) => <span key={i} className="text-xs px-2 py-0.5 rounded-full bg-green-50 text-green-700">{c}</span>)}
                         </div>
                       </div>
                     ) : null}
-                    <pre className="text-xs font-mono bg-slate-50 rounded-lg p-4 overflow-x-auto whitespace-pre-wrap text-[var(--foreground)] max-h-[300px] overflow-y-auto">
-                      {run.phases.p115.revised_draft}
-                    </pre>
+                    <pre className="text-xs font-mono bg-slate-50 rounded-lg p-4 overflow-x-auto whitespace-pre-wrap text-[var(--foreground)] max-h-[300px] overflow-y-auto">{run.phases.p115.revised_draft}</pre>
                   </div>
                 </PhasePanel>
               )}
 
-              {/* ── Final article ── */}
+              {/* Critic */}
+              {run.phases.p13 && (
+                <PhasePanel
+                  title="Critic / QA Gate"
+                  badge={run.phases.p13.gate_result}
+                  expanded={expandedPhase === "critic"}
+                  onToggle={() => setExpandedPhase(expandedPhase === "critic" ? null : "critic")}
+                  onRerun={!isRunning ? () => setRerunState({ phase: "critic", comment: "", loading: false }) : undefined}
+                  rerunActive={rerunState?.phase === "critic"}
+                  rerunComment={rerunState?.phase === "critic" ? rerunState.comment : ""}
+                  onRerunCommentChange={(c) => setRerunState((s) => s ? { ...s, comment: c } : s)}
+                  onRerunSubmit={() => { if (rerunState) rerunPhase("critic", rerunState.comment); }}
+                  onRerunCancel={() => setRerunState(null)}
+                  rerunLoading={rerunState?.phase === "critic" && rerunState.loading}
+                >
+                  {run.phases.p13.failing_items?.length ? (
+                    <ul className="text-xs text-amber-700 list-disc list-inside space-y-0.5">{run.phases.p13.failing_items.map((f, i) => <li key={i}>{f}</li>)}</ul>
+                  ) : (
+                    <p className="text-xs text-green-700">All rubric items passed.</p>
+                  )}
+                </PhasePanel>
+              )}
+
+              {/* Final article */}
               {run.final_markdown && (
                 <PhasePanel
                   title="Final Article"
@@ -1017,12 +946,7 @@ export default function BlogGenPage() {
                   onDownload={() => downloadText(`final-${slug(run.keyword)}.md`, run.final_markdown ?? "")}
                 >
                   <div className="flex justify-end mb-3">
-                    <button
-                      onClick={() => navigator.clipboard.writeText(run.final_markdown ?? "")}
-                      className="text-xs px-3 py-1 rounded border border-[var(--border)] text-[var(--muted)] hover:text-[var(--foreground)]"
-                    >
-                      Copy markdown
-                    </button>
+                    <button onClick={() => navigator.clipboard.writeText(run.final_markdown ?? "")} className="text-xs px-3 py-1 rounded border border-[var(--border)] text-[var(--muted)] hover:text-[var(--foreground)]">Copy markdown</button>
                   </div>
                   <pre className="text-xs font-mono bg-slate-50 rounded-lg p-4 overflow-x-auto whitespace-pre-wrap text-[var(--foreground)] max-h-[600px] overflow-y-auto">
                     {run.final_markdown}
@@ -1031,9 +955,7 @@ export default function BlogGenPage() {
               )}
             </div>
 
-            {error && (
-              <div className="rounded-lg border border-red-200 bg-red-50 p-4 text-sm text-red-700">{error}</div>
-            )}
+            {error && <div className="rounded-lg border border-red-200 bg-red-50 p-4 text-sm text-red-700">{error}</div>}
           </div>
         )}
       </div>
@@ -1041,12 +963,143 @@ export default function BlogGenPage() {
   );
 }
 
+function ResearchContent({ run }: { run: BlogGenRun }) {
+  return (
+    <div className="space-y-5 text-sm">
+      {run.phases.p0 && (
+        <ReasoningBlock title="Intent Analysis" color="blue">
+          <p className="text-[var(--foreground)] font-medium mb-1">{run.phases.p0.primary_intent}</p>
+          <p className="text-xs text-[var(--muted)] mb-2">{run.phases.p0.scope_note}</p>
+          <div className="flex flex-wrap gap-1">
+            {run.phases.p0.sub_intents?.map((s, i) => <span key={i} className="text-xs px-2 py-0.5 rounded-full bg-blue-50 text-blue-700">{s}</span>)}
+          </div>
+        </ReasoningBlock>
+      )}
+      {run.phases.p1 && (
+        <ReasoningBlock title="Entities & Semantic Clusters" color="purple">
+          <div className="mb-2">
+            <p className="text-xs text-[var(--muted)] mb-1">Core entities</p>
+            <div className="flex flex-wrap gap-1">
+              {run.phases.p1.core_entities?.map((e, i) => <span key={i} className="text-xs px-2 py-0.5 rounded-full bg-purple-50 text-purple-700">{e}</span>)}
+            </div>
+          </div>
+          {run.phases.p1.semantic_clusters?.map((c, i) => (
+            <div key={i} className="mt-2">
+              <p className="text-xs font-medium text-[var(--muted)]">[{c.cluster}]</p>
+              <div className="flex flex-wrap gap-1 mt-0.5">{c.terms.map((t, j) => <span key={j} className="text-xs px-2 py-0.5 rounded-full bg-slate-100 text-[var(--muted)]">{t}</span>)}</div>
+            </div>
+          ))}
+          {run.phases.p1.notably_absent_from_competitors?.length ? (
+            <div className="mt-2">
+              <p className="text-xs text-[var(--muted)] mb-1">Notably absent from competitors</p>
+              <div className="flex flex-wrap gap-1">
+                {run.phases.p1.notably_absent_from_competitors.map((e, i) => <span key={i} className="text-xs px-2 py-0.5 rounded-full bg-amber-50 text-amber-700">{e}</span>)}
+              </div>
+            </div>
+          ) : null}
+        </ReasoningBlock>
+      )}
+      {run.phases.p2?.fanout_queries && (
+        <ReasoningBlock title={`Fan-out Queries (${run.phases.p2.fanout_queries.length})`} color="teal">
+          <p className="text-xs text-[var(--muted)] mb-2">Sub-questions used to map the full information space around your keyword.</p>
+          <ol className="space-y-1">
+            {run.phases.p2.fanout_queries.map((q, i) => (
+              <li key={i} className="flex gap-2">
+                <span className="text-xs text-teal-500 font-medium flex-shrink-0">{i + 1}.</span>
+                <span className="text-xs text-[var(--foreground)]">{q}</span>
+              </li>
+            ))}
+          </ol>
+        </ReasoningBlock>
+      )}
+      {run.phases.p3 && (
+        <ReasoningBlock title="SERP & Competitor Analysis" color="orange">
+          <div className="grid grid-cols-3 gap-3 mb-3">
+            <div className="rounded-lg bg-orange-50 p-2 text-center">
+              <p className="text-xs text-[var(--muted)]">Avg word count</p>
+              <p className="text-sm font-semibold text-orange-700">{run.phases.p3.serp_patterns?.avg_word_count ?? "—"}</p>
+            </div>
+            <div className="rounded-lg bg-orange-50 p-2 text-center col-span-2">
+              <p className="text-xs text-[var(--muted)]">Common format</p>
+              <p className="text-xs font-medium text-orange-700">{run.phases.p3.serp_patterns?.common_format ?? "—"}</p>
+            </div>
+          </div>
+          <p className="text-xs text-[var(--muted)] mb-0.5">Common H1 pattern</p>
+          <p className="text-xs text-[var(--foreground)] mb-3 italic">"{run.phases.p3.serp_patterns?.common_h1_pattern}"</p>
+          {run.phases.p3.ai_overview_summary && (
+            <div className="mb-3">
+              <p className="text-xs text-[var(--muted)] mb-0.5">AI Overview summary</p>
+              <p className="text-xs text-[var(--foreground)]">{run.phases.p3.ai_overview_summary}</p>
+            </div>
+          )}
+          {run.phases.p3.leading_angle_per_competitor?.length ? (
+            <div>
+              <p className="text-xs text-[var(--muted)] mb-1">Competitor angles</p>
+              <div className="space-y-1.5">
+                {run.phases.p3.leading_angle_per_competitor.map((c, i) => (
+                  <div key={i} className="flex gap-2 items-start">
+                    <span className="text-xs text-[var(--muted)] flex-shrink-0 w-4">{i + 1}.</span>
+                    <div>
+                      <p className="text-xs font-medium text-[var(--foreground)] truncate max-w-xs">{c.source}</p>
+                      <p className="text-xs text-[var(--muted)]">{c.angle}</p>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ) : null}
+        </ReasoningBlock>
+      )}
+      {run.phases.p4 && (
+        <ReasoningBlock title="Coverage Gap Analysis" color="red">
+          {run.phases.p4.fully_covered?.length ? (
+            <div className="mb-2">
+              <p className="text-xs text-[var(--muted)] mb-1">Fully covered by competitors</p>
+              <div className="flex flex-wrap gap-1">{run.phases.p4.fully_covered.map((t, i) => <span key={i} className="text-xs px-2 py-0.5 rounded-full bg-slate-100 text-[var(--muted)] line-through">{t}</span>)}</div>
+            </div>
+          ) : null}
+          {run.phases.p4.partially_covered?.length ? (
+            <div className="mb-2">
+              <p className="text-xs text-[var(--muted)] mb-1">Partially covered</p>
+              <div className="flex flex-wrap gap-1">{run.phases.p4.partially_covered.map((t, i) => <span key={i} className="text-xs px-2 py-0.5 rounded-full bg-amber-50 text-amber-700">{t}</span>)}</div>
+            </div>
+          ) : null}
+          {run.phases.p4.gaps?.length ? (
+            <div>
+              <p className="text-xs text-[var(--muted)] mb-1">Gaps — your opportunity</p>
+              <ul className="space-y-1.5">
+                {run.phases.p4.gaps.map((g, i) => (
+                  <li key={i} className="rounded-lg bg-red-50 p-2">
+                    <p className="text-xs font-medium text-red-700">{g.topic}</p>
+                    <p className="text-xs text-red-600">{g.why_it_matters}</p>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ) : null}
+        </ReasoningBlock>
+      )}
+      {run.phases.p5 && (
+        <ReasoningBlock title="Differentiation Decision" color="green">
+          <p className="text-xs text-[var(--muted)] mb-1">Angle chosen</p>
+          <p className="text-sm font-medium text-[var(--foreground)] mb-3">{run.phases.p5.angle_statement}</p>
+          <ul className="space-y-1">
+            {run.phases.p5.differentiation_points?.map((d, i) => (
+              <li key={i} className="flex gap-2 text-xs text-[var(--foreground)]">
+                <span className="text-green-500 flex-shrink-0">✓</span>{d}
+              </li>
+            ))}
+          </ul>
+          <p className="text-xs text-[var(--muted)] mt-2">Target word count: <span className="font-medium text-[var(--foreground)]">{run.phases.p5.target_word_count}</span></p>
+        </ReasoningBlock>
+      )}
+    </div>
+  );
+}
+
 function PhasePanel({
-  title,
-  badge,
-  expanded,
-  onToggle,
-  onDownload,
+  title, badge, expanded, onToggle, onDownload, onRerun,
+  rerunActive, rerunComment, onRerunCommentChange, onRerunSubmit, onRerunCancel, rerunLoading,
   children,
 }: {
   title: string;
@@ -1054,6 +1107,13 @@ function PhasePanel({
   expanded: boolean;
   onToggle: () => void;
   onDownload?: () => void;
+  onRerun?: () => void;
+  rerunActive?: boolean;
+  rerunComment?: string;
+  onRerunCommentChange?: (c: string) => void;
+  onRerunSubmit?: () => void;
+  onRerunCancel?: () => void;
+  rerunLoading?: boolean;
   children: React.ReactNode;
 }) {
   return (
@@ -1063,49 +1123,56 @@ function PhasePanel({
           <span className="text-sm font-medium text-[var(--foreground)]">{title}</span>
           {badge && <span className="text-xs px-2 py-0.5 rounded-full bg-slate-100 text-[var(--muted)]">{badge}</span>}
         </button>
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 flex-shrink-0">
+          {onRerun && !rerunActive && (
+            <button onClick={(e) => { e.stopPropagation(); onRerun(); }} className="text-xs px-2.5 py-1 rounded border border-[var(--border)] text-[var(--muted)] hover:text-amber-700 hover:border-amber-300 transition" title="Rerun this step with feedback">
+              ↺ Rerun
+            </button>
+          )}
           {onDownload && (
-            <button
-              onClick={(e) => { e.stopPropagation(); onDownload(); }}
-              className="text-xs px-2.5 py-1 rounded border border-[var(--border)] text-[var(--muted)] hover:text-[var(--foreground)] hover:border-[var(--accent)] transition"
-              title="Download this step"
-            >
+            <button onClick={(e) => { e.stopPropagation(); onDownload(); }} className="text-xs px-2.5 py-1 rounded border border-[var(--border)] text-[var(--muted)] hover:text-[var(--foreground)] hover:border-[var(--accent)] transition" title="Download this step">
               ↓ Download
             </button>
           )}
           <button onClick={onToggle} className="text-[var(--muted)] text-sm px-1">{expanded ? "▲" : "▼"}</button>
         </div>
       </div>
+
+      {/* Rerun form */}
+      {rerunActive && (
+        <div className="px-4 pb-3 border-t border-amber-100 bg-amber-50">
+          <p className="text-xs font-medium text-amber-800 mt-3 mb-2">What should change? Add feedback for this phase:</p>
+          <textarea
+            value={rerunComment ?? ""}
+            onChange={(e) => onRerunCommentChange?.(e.target.value)}
+            placeholder="e.g. Focus more on B2B law firms specifically. Add a section on local SEO tactics."
+            rows={3}
+            className="w-full rounded-lg border border-amber-200 bg-white px-3 py-2 text-sm text-[var(--foreground)] outline-none focus:border-amber-400 resize-none"
+            autoFocus
+          />
+          <div className="flex gap-2 mt-2">
+            <button
+              onClick={onRerunSubmit}
+              disabled={rerunLoading}
+              className="text-xs px-3 py-1.5 rounded-lg bg-amber-600 text-white hover:bg-amber-700 disabled:opacity-50 transition"
+            >
+              {rerunLoading ? "Running…" : "Run with this feedback"}
+            </button>
+            <button onClick={onRerunCancel} disabled={rerunLoading} className="text-xs px-3 py-1.5 rounded-lg border border-[var(--border)] text-[var(--muted)] hover:text-[var(--foreground)] disabled:opacity-50">
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
+
       {expanded && <div className="px-4 pb-4 border-t border-[var(--border)]"><div className="pt-4">{children}</div></div>}
     </div>
   );
 }
 
-function ReasoningBlock({
-  title,
-  color,
-  children,
-}: {
-  title: string;
-  color: "blue" | "purple" | "teal" | "orange" | "red" | "green";
-  children: React.ReactNode;
-}) {
-  const accent: Record<string, string> = {
-    blue: "border-blue-200 bg-blue-50/40",
-    purple: "border-purple-200 bg-purple-50/40",
-    teal: "border-teal-200 bg-teal-50/40",
-    orange: "border-orange-200 bg-orange-50/40",
-    red: "border-red-200 bg-red-50/40",
-    green: "border-green-200 bg-green-50/40",
-  };
-  const label: Record<string, string> = {
-    blue: "text-blue-700",
-    purple: "text-purple-700",
-    teal: "text-teal-700",
-    orange: "text-orange-700",
-    red: "text-red-700",
-    green: "text-green-700",
-  };
+function ReasoningBlock({ title, color, children }: { title: string; color: "blue" | "purple" | "teal" | "orange" | "red" | "green"; children: React.ReactNode }) {
+  const accent: Record<string, string> = { blue: "border-blue-200 bg-blue-50/40", purple: "border-purple-200 bg-purple-50/40", teal: "border-teal-200 bg-teal-50/40", orange: "border-orange-200 bg-orange-50/40", red: "border-red-200 bg-red-50/40", green: "border-green-200 bg-green-50/40" };
+  const label: Record<string, string> = { blue: "text-blue-700", purple: "text-purple-700", teal: "text-teal-700", orange: "text-orange-700", red: "text-red-700", green: "text-green-700" };
   return (
     <div className={`rounded-lg border p-3 ${accent[color]}`}>
       <p className={`text-xs font-semibold mb-2 uppercase tracking-wide ${label[color]}`}>{title}</p>
