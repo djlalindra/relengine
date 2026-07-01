@@ -410,103 +410,128 @@ export default function BlogGenPage() {
     }
   }
 
-  async function rerunPhase(phase: PhaseKey, comment: string) {
+  async function rerunPhase(startPhase: PhaseKey, comment: string) {
     if (!run) return;
-    setRerunState({ phase, comment, loading: true });
     setError("");
 
     const abort = new AbortController();
     abortRef.current = abort;
     const progress = (msg: string) => setProgressMsg(msg);
 
+    const PHASE_ORDER: PhaseKey[] = ["research", "outline", "draft", "factcheck", "polish", "humanize", "critic"];
+    const startIdx = PHASE_ORDER.indexOf(startPhase);
+
+    // Seed local data from current run — updated as each phase produces fresh output
+    let researchData = { p0: run.phases.p0, p1: run.phases.p1, p2: run.phases.p2, p3: run.phases.p3, p4: run.phases.p4, p5: run.phases.p5 };
+    let outlineData: Phase6Output | undefined = run.phases.p6;
+    let draftData: Phase7Output | undefined = run.phases.p7;
+    let correctedMd: string | undefined;
+    let p8Data = run.phases.p8;
+    let p9Data = run.phases.p9;
+    let p10Data = run.phases.p10;
+    let eeatData: Phase12Output | undefined = run.phases.p12;
+    let humanizedData: Phase115Output | undefined = run.phases.p115;
+
     try {
-      if (phase === "research") {
-        const research = await streamPhase(
-          "/api/blog-gen/research",
-          { ...run.input, keyword: run.keyword, rerun_comment: comment },
-          progress, abort.signal
-        ) as { p0?: Phase0Output; p1?: Phase1Output; p2?: Phase2Output; p3?: Phase3Output; p4?: Phase4Output; p5?: Phase5Output };
-        updateRun((r) => ({
-          ...r,
-          phases: { ...r.phases, p0: research.p0, p1: research.p1, p2: research.p2, p3: research.p3, p4: research.p4, p5: research.p5 },
-          updated_at: new Date().toISOString(),
-        }));
-      } else if (phase === "outline") {
-        const currentResearch = { p0: run.phases.p0, p1: run.phases.p1, p2: run.phases.p2, p3: run.phases.p3, p4: run.phases.p4, p5: run.phases.p5 };
-        const outline = await streamPhase(
-          "/api/blog-gen/outline",
-          { keyword: run.keyword, research: currentResearch, rerun_comment: comment },
-          progress, abort.signal
-        ) as Phase6Output;
-        updateRun((r) => ({ ...r, phases: { ...r.phases, p6: outline }, updated_at: new Date().toISOString() }));
-      } else if (phase === "draft") {
-        const draft = await streamPhase(
-          "/api/blog-gen/draft",
-          {
-            outline: run.phases.p6,
-            research: { p0: run.phases.p0, p1: run.phases.p1, p2: run.phases.p2, p3: run.phases.p3, p4: run.phases.p4, p5: run.phases.p5 },
-            target_word_count: run.phases.p5?.target_word_count ?? 1800,
-            manual_eeat_notes: run.input.manual_eeat_notes ?? "",
-            rerun_comment: comment,
-          },
-          progress, abort.signal
-        ) as Phase7Output;
-        updateRun((r) => ({ ...r, phases: { ...r.phases, p7: draft }, updated_at: new Date().toISOString() }));
-      } else if (phase === "factcheck") {
-        const factcheck = await streamPhase(
-          "/api/blog-gen/factcheck",
-          {
-            keyword: run.keyword,
-            draft_markdown: run.phases.p7?.draft_markdown ?? "",
-            placeholders: run.phases.p7?.placeholders_needing_sources ?? [],
-            rerun_comment: comment,
-          },
-          progress, abort.signal
-        ) as { p9?: Phase9Output; p10?: Phase10Output; corrected_markdown?: string; sourced_claims?: Phase8Output["sourced_claims"]; suggested_images?: SuggestedImage[] };
-        updateRun((r) => ({
-          ...r,
-          phases: {
-            ...r.phases,
-            p8: { sourced_claims: factcheck.sourced_claims ?? [], suggested_images: factcheck.suggested_images ?? [] },
-            p9: factcheck.p9,
-            p10: factcheck.p10,
-          },
-          updated_at: new Date().toISOString(),
-        }));
-      } else if (phase === "polish") {
-        const draftMd = run.phases.p7?.draft_markdown ?? "";
-        const eeat = await streamPhase(
-          "/api/blog-gen/polish",
-          { draft_markdown: draftMd, manual_eeat_notes: run.input.manual_eeat_notes ?? "", rerun_comment: comment },
-          progress, abort.signal
-        ) as Phase12Output;
-        updateRun((r) => ({ ...r, phases: { ...r.phases, p12: eeat }, updated_at: new Date().toISOString() }));
-      } else if (phase === "humanize") {
-        const draftMd = run.phases.p12?.revised_markdown ?? run.phases.p7?.draft_markdown ?? "";
-        const humanized = await streamPhase(
-          "/api/blog-gen/humanize",
-          { draft_markdown: draftMd, rerun_comment: comment },
-          progress, abort.signal
-        ) as Phase115Output;
-        updateRun((r) => ({ ...r, phases: { ...r.phases, p115: humanized }, updated_at: new Date().toISOString() }));
-      } else if (phase === "critic") {
-        const finalMd = run.phases.p115?.revised_draft ?? run.phases.p12?.revised_markdown ?? run.phases.p7?.draft_markdown ?? "";
-        const critic = await streamPhase(
-          "/api/blog-gen/critic",
-          { final_markdown: finalMd, rerun_comment: comment },
-          progress, abort.signal
-        ) as Phase13Output;
-        updateRun((r) => ({
-          ...r,
-          phases: { ...r.phases, p13: critic },
-          final_markdown: finalMd,
-          status: critic.gate_result === "PASS" ? "COMPLETE" : "FAILED_QA_GATE",
-          updated_at: new Date().toISOString(),
-        }));
+      for (let i = startIdx; i < PHASE_ORDER.length; i++) {
+        const phase = PHASE_ORDER[i];
+        const isTarget = i === startIdx;
+        const phaseComment = isTarget ? comment : undefined;
+
+        setRerunState({ phase, comment, loading: true });
+
+        if (phase === "research") {
+          researchData = await streamPhase(
+            "/api/blog-gen/research",
+            { ...run.input, keyword: run.keyword, rerun_comment: phaseComment },
+            progress, abort.signal
+          ) as typeof researchData;
+          updateRun((r) => ({
+            ...r,
+            phases: { ...r.phases, p0: researchData.p0, p1: researchData.p1, p2: researchData.p2, p3: researchData.p3, p4: researchData.p4, p5: researchData.p5 },
+            updated_at: new Date().toISOString(),
+          }));
+
+        } else if (phase === "outline") {
+          outlineData = await streamPhase(
+            "/api/blog-gen/outline",
+            { keyword: run.keyword, research: researchData, rerun_comment: phaseComment },
+            progress, abort.signal
+          ) as Phase6Output;
+          updateRun((r) => ({ ...r, phases: { ...r.phases, p6: outlineData }, updated_at: new Date().toISOString() }));
+
+        } else if (phase === "draft") {
+          draftData = await streamPhase(
+            "/api/blog-gen/draft",
+            {
+              outline: outlineData,
+              research: researchData,
+              target_word_count: researchData.p5?.target_word_count ?? 1800,
+              manual_eeat_notes: run.input.manual_eeat_notes ?? "",
+              rerun_comment: phaseComment,
+            },
+            progress, abort.signal
+          ) as Phase7Output;
+          updateRun((r) => ({ ...r, phases: { ...r.phases, p7: draftData }, updated_at: new Date().toISOString() }));
+
+        } else if (phase === "factcheck") {
+          const factcheck = await streamPhase(
+            "/api/blog-gen/factcheck",
+            {
+              keyword: run.keyword,
+              draft_markdown: draftData?.draft_markdown ?? "",
+              placeholders: draftData?.placeholders_needing_sources ?? [],
+              rerun_comment: phaseComment,
+            },
+            progress, abort.signal
+          ) as { p9?: Phase9Output; p10?: Phase10Output; corrected_markdown?: string; sourced_claims?: Phase8Output["sourced_claims"]; suggested_images?: SuggestedImage[] };
+          correctedMd = factcheck.corrected_markdown;
+          p8Data = { sourced_claims: factcheck.sourced_claims ?? [], suggested_images: factcheck.suggested_images ?? [] };
+          p9Data = factcheck.p9;
+          p10Data = factcheck.p10;
+          updateRun((r) => ({
+            ...r,
+            phases: { ...r.phases, p8: p8Data, p9: p9Data, p10: p10Data },
+            updated_at: new Date().toISOString(),
+          }));
+
+        } else if (phase === "polish") {
+          const draftForPolish = correctedMd ?? draftData?.draft_markdown ?? "";
+          eeatData = await streamPhase(
+            "/api/blog-gen/polish",
+            { draft_markdown: draftForPolish, manual_eeat_notes: run.input.manual_eeat_notes ?? "", rerun_comment: phaseComment },
+            progress, abort.signal
+          ) as Phase12Output;
+          updateRun((r) => ({ ...r, phases: { ...r.phases, p12: eeatData }, updated_at: new Date().toISOString() }));
+
+        } else if (phase === "humanize") {
+          const draftForHumanize = eeatData?.revised_markdown ?? correctedMd ?? draftData?.draft_markdown ?? "";
+          humanizedData = await streamPhase(
+            "/api/blog-gen/humanize",
+            { draft_markdown: draftForHumanize, rerun_comment: phaseComment },
+            progress, abort.signal
+          ) as Phase115Output;
+          updateRun((r) => ({ ...r, phases: { ...r.phases, p115: humanizedData }, updated_at: new Date().toISOString() }));
+
+        } else if (phase === "critic") {
+          const finalMd = humanizedData?.revised_draft ?? eeatData?.revised_markdown ?? correctedMd ?? draftData?.draft_markdown ?? "";
+          const critic = await streamPhase(
+            "/api/blog-gen/critic",
+            { final_markdown: finalMd, rerun_comment: phaseComment },
+            progress, abort.signal
+          ) as Phase13Output;
+          updateRun((r) => ({
+            ...r,
+            phases: { ...r.phases, p13: critic },
+            final_markdown: finalMd,
+            status: critic.gate_result === "PASS" ? "COMPLETE" : "FAILED_QA_GATE",
+            updated_at: new Date().toISOString(),
+          }));
+        }
       }
     } catch (err) {
       if ((err as Error).name === "AbortError") return;
-      setError(err instanceof Error ? err.message : `Rerun of ${phase} failed.`);
+      setError(err instanceof Error ? err.message : `Rerun failed.`);
     } finally {
       setRerunState(null);
       setProgressMsg("");
