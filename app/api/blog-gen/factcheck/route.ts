@@ -282,7 +282,7 @@ export async function POST(req: NextRequest) {
             JSON.stringify(allSources, null, 2),
             body.rerun_comment
           ),
-          { model: SONNET_5, maxTokens: 10000, signal: controller.signal }
+          { model: SONNET_5, maxTokens: 16000, signal: controller.signal }
         );
 
         const factcheck = parseJson(raw) as {

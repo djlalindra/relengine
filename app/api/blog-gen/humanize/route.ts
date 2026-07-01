@@ -39,7 +39,7 @@ export async function POST(req: NextRequest) {
         const raw = await callClaude(
           HUMANIZER_SYSTEM,
           buildHumanizePrompt(body.draft_markdown!, body.rerun_comment),
-          { model: SONNET_5, maxTokens: 10000, signal: controller.signal }
+          { model: SONNET_5, maxTokens: 16000, signal: controller.signal }
         );
 
         const result = parseJson(raw);
