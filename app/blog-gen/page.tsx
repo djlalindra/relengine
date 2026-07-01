@@ -1,0 +1,691 @@
+"use client";
+
+import { useState, useRef, useCallback } from "react";
+import type {
+  BlogGenRun,
+  BlogGenInput,
+  Phase0Output,
+  Phase1Output,
+  Phase2Output,
+  Phase3Output,
+  Phase4Output,
+  Phase5Output,
+  Phase6Output,
+  Phase7Output,
+  Phase8Output,
+  Phase9Output,
+  Phase10Output,
+  Phase12Output,
+  Phase115Output,
+  Phase13Output,
+  SuggestedImage,
+} from "@/lib/blog-gen/types";
+
+const STORAGE_KEY = "relengine_blog_gen_v1";
+const MAX_HISTORY = 50;
+
+function generateRunId(): string {
+  return Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+}
+
+function loadHistory(): BlogGenRun[] {
+  try {
+    return JSON.parse(localStorage.getItem(STORAGE_KEY) ?? "[]") as BlogGenRun[];
+  } catch {
+    return [];
+  }
+}
+
+function saveRun(run: BlogGenRun) {
+  const history = loadHistory().filter((r) => r.run_id !== run.run_id);
+  history.unshift(run);
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(history.slice(0, MAX_HISTORY)));
+}
+
+function deleteRun(runId: string) {
+  const history = loadHistory().filter((r) => r.run_id !== runId);
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(history));
+}
+
+async function streamPhase(
+  url: string,
+  body: object,
+  onProgress: (msg: string) => void,
+  signal: AbortSignal
+): Promise<unknown> {
+  const resp = await fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+    signal,
+  });
+  if (!resp.ok || !resp.body) throw new Error(`HTTP ${resp.status}`);
+
+  const reader = resp.body.getReader();
+  const decoder = new TextDecoder();
+  let buf = "";
+  let result: unknown = null;
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buf += decoder.decode(value, { stream: true });
+    const lines = buf.split("\n");
+    buf = lines.pop() ?? "";
+    for (const line of lines) {
+      if (!line.startsWith("data: ")) continue;
+      const evt = JSON.parse(line.slice(6)) as {
+        type: string;
+        step?: string;
+        error?: string;
+        phase?: string;
+        data?: unknown;
+      };
+      if (evt.type === "progress" && evt.step) onProgress(evt.step);
+      if (evt.type === "error") throw new Error(evt.error ?? "Unknown error");
+      if (evt.type === "result") result = evt.data;
+    }
+  }
+
+  return result;
+}
+
+const PHASE_LABELS = [
+  { key: "research", label: "Research", subtitle: "Intent · Entities · Fan-out · Gap analysis" },
+  { key: "outline", label: "Outline", subtitle: "Answer-first structure" },
+  { key: "draft", label: "Draft", subtitle: "Full article (Claude Sonnet 5)" },
+  { key: "factcheck", label: "Fact-check", subtitle: "Sources · Images · Harvard refs" },
+  { key: "polish", label: "E-E-A-T", subtitle: "Expertise signals (Claude Sonnet 5)" },
+  { key: "humanize", label: "Humanize", subtitle: "Remove AI tells (Claude Sonnet 5)" },
+  { key: "critic", label: "Critic", subtitle: "QA gate (Claude Sonnet 5)" },
+];
+
+type PhaseKey = typeof PHASE_LABELS[number]["key"];
+
+export default function BlogGenPage() {
+  const [input, setInput] = useState<BlogGenInput>({ keyword: "" });
+  const [run, setRun] = useState<BlogGenRun | null>(null);
+  const [activePhase, setActivePhase] = useState<PhaseKey | null>(null);
+  const [progressMsg, setProgressMsg] = useState("");
+  const [error, setError] = useState("");
+  const [history, setHistory] = useState<BlogGenRun[]>(() => {
+    if (typeof window !== "undefined") return loadHistory();
+    return [];
+  });
+  const [expandedPhase, setExpandedPhase] = useState<string | null>(null);
+  const [showHistory, setShowHistory] = useState(false);
+  const [exporting, setExporting] = useState(false);
+  const abortRef = useRef<AbortController | null>(null);
+
+  const updateRun = useCallback((updater: (prev: BlogGenRun) => BlogGenRun) => {
+    setRun((prev) => {
+      if (!prev) return prev;
+      const next = updater(prev);
+      saveRun(next);
+      setHistory(loadHistory());
+      return next;
+    });
+  }, []);
+
+  async function runFullPipeline() {
+    if (!input.keyword.trim()) { setError("Enter a keyword to continue."); return; }
+    setError("");
+
+    const runId = generateRunId();
+    const newRun: BlogGenRun = {
+      run_id: runId,
+      keyword: input.keyword.trim(),
+      status: "RUNNING",
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+      input,
+      phases: {},
+    };
+    setRun(newRun);
+    saveRun(newRun);
+    setHistory(loadHistory());
+
+    const abort = new AbortController();
+    abortRef.current = abort;
+
+    const progress = (msg: string) => setProgressMsg(msg);
+    const update = (updater: (prev: BlogGenRun) => BlogGenRun) => updateRun(updater);
+
+    try {
+      // Phase: Research (0-5)
+      setActivePhase("research");
+      const research = await streamPhase(
+        "/api/blog-gen/research",
+        { ...input, keyword: input.keyword.trim() },
+        progress,
+        abort.signal
+      ) as { p0?: Phase0Output; p1?: Phase1Output; p2?: Phase2Output; p3?: Phase3Output; p4?: Phase4Output; p5?: Phase5Output };
+
+      update((r) => ({
+        ...r,
+        phases: { ...r.phases, p0: research.p0, p1: research.p1, p2: research.p2, p3: research.p3, p4: research.p4, p5: research.p5 },
+        updated_at: new Date().toISOString(),
+      }));
+
+      // Phase: Outline (6)
+      setActivePhase("outline");
+      const outline = await streamPhase(
+        "/api/blog-gen/outline",
+        { keyword: input.keyword.trim(), research },
+        progress,
+        abort.signal
+      ) as Phase6Output;
+
+      update((r) => ({ ...r, phases: { ...r.phases, p6: outline }, updated_at: new Date().toISOString() }));
+
+      // Phase: Draft (7)
+      setActivePhase("draft");
+      const draft = await streamPhase(
+        "/api/blog-gen/draft",
+        {
+          outline,
+          research,
+          target_word_count: research.p5?.target_word_count ?? 1800,
+          manual_eeat_notes: input.manual_eeat_notes ?? "",
+        },
+        progress,
+        abort.signal
+      ) as Phase7Output;
+
+      update((r) => ({ ...r, phases: { ...r.phases, p7: draft }, updated_at: new Date().toISOString() }));
+
+      // Phase: Fact-check (8-10)
+      setActivePhase("factcheck");
+      const factcheck = await streamPhase(
+        "/api/blog-gen/factcheck",
+        {
+          keyword: input.keyword.trim(),
+          draft_markdown: draft.draft_markdown ?? "",
+          placeholders: draft.placeholders_needing_sources ?? [],
+        },
+        progress,
+        abort.signal
+      ) as { p9?: Phase9Output; p10?: Phase10Output; corrected_markdown?: string; sourced_claims?: Phase8Output["sourced_claims"]; suggested_images?: SuggestedImage[] };
+
+      update((r) => ({
+        ...r,
+        phases: {
+          ...r.phases,
+          p8: { sourced_claims: factcheck.sourced_claims ?? [], suggested_images: factcheck.suggested_images ?? [] },
+          p9: factcheck.p9,
+          p10: factcheck.p10,
+        },
+        updated_at: new Date().toISOString(),
+      }));
+
+      // Fetch images locally
+      if (factcheck.suggested_images?.length) {
+        progress("Downloading authoritative images…");
+        try {
+          const imgResp = await fetch("/api/blog-gen/images", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ images: factcheck.suggested_images, run_id: runId }),
+            signal: abort.signal,
+          });
+          if (imgResp.ok) {
+            const { images: savedImages } = await imgResp.json() as { images: SuggestedImage[] };
+            update((r) => ({
+              ...r,
+              phases: { ...r.phases, p8: { sourced_claims: r.phases.p8?.sourced_claims ?? [], suggested_images: savedImages } },
+            }));
+          }
+        } catch { /* images optional */ }
+      }
+
+      const draftForPolish = factcheck.corrected_markdown ?? draft.draft_markdown ?? "";
+
+      // Phase: E-E-A-T (12)
+      setActivePhase("polish");
+      const eeat = await streamPhase(
+        "/api/blog-gen/polish",
+        { draft_markdown: draftForPolish, manual_eeat_notes: input.manual_eeat_notes ?? "" },
+        progress,
+        abort.signal
+      ) as Phase12Output;
+
+      update((r) => ({ ...r, phases: { ...r.phases, p12: eeat }, updated_at: new Date().toISOString() }));
+
+      // Phase: Humanize (11.5)
+      setActivePhase("humanize");
+      const humanized = await streamPhase(
+        "/api/blog-gen/humanize",
+        { draft_markdown: eeat.revised_markdown ?? draftForPolish },
+        progress,
+        abort.signal
+      ) as Phase115Output;
+
+      update((r) => ({ ...r, phases: { ...r.phases, p115: humanized }, updated_at: new Date().toISOString() }));
+
+      const finalMarkdown = humanized.revised_draft ?? eeat.revised_markdown ?? draftForPolish;
+
+      // Phase: Critic (13)
+      setActivePhase("critic");
+      const critic = await streamPhase(
+        "/api/blog-gen/critic",
+        { final_markdown: finalMarkdown },
+        progress,
+        abort.signal
+      ) as Phase13Output;
+
+      update((r) => ({
+        ...r,
+        phases: { ...r.phases, p13: critic },
+        final_markdown: finalMarkdown,
+        status: critic.gate_result === "PASS" ? "COMPLETE" : "FAILED_QA_GATE",
+        updated_at: new Date().toISOString(),
+      }));
+
+      setActivePhase(null);
+      setProgressMsg("");
+    } catch (err) {
+      if ((err as Error).name === "AbortError") return;
+      setError(err instanceof Error ? err.message : "Pipeline failed.");
+      setActivePhase(null);
+      updateRun((r) => ({ ...r, status: "RUNNING", updated_at: new Date().toISOString() }));
+    }
+  }
+
+  function stopPipeline() {
+    abortRef.current?.abort();
+    setActivePhase(null);
+    setProgressMsg("");
+  }
+
+  async function exportDocx(r: BlogGenRun) {
+    setExporting(true);
+    try {
+      const resp = await fetch("/api/blog-gen/export", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ run: r }),
+      });
+      if (!resp.ok) throw new Error("Export failed");
+      const blob = await resp.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `blog-${r.keyword.replace(/[^a-z0-9]+/gi, "-").toLowerCase()}.docx`;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Export failed.");
+    } finally {
+      setExporting(false);
+    }
+  }
+
+  const currentPhaseIndex = activePhase ? PHASE_LABELS.findIndex((p) => p.key === activePhase) : -1;
+  const completedPhases = run
+    ? PHASE_LABELS.filter((p) => {
+        if (p.key === "research") return !!run.phases.p0;
+        if (p.key === "outline") return !!run.phases.p6;
+        if (p.key === "draft") return !!run.phases.p7;
+        if (p.key === "factcheck") return !!run.phases.p9;
+        if (p.key === "polish") return !!run.phases.p12;
+        if (p.key === "humanize") return !!run.phases.p115;
+        if (p.key === "critic") return !!run.phases.p13;
+        return false;
+      }).map((p) => p.key)
+    : [];
+
+  return (
+    <div className="flex min-h-screen bg-[var(--background)]">
+      {/* Sidebar — history */}
+      <aside className={`fixed inset-y-0 left-0 z-20 w-72 bg-[var(--card)] border-r border-[var(--border)] flex flex-col transition-transform duration-200 ${showHistory ? "translate-x-0" : "-translate-x-full"}`}>
+        <div className="flex items-center justify-between p-4 border-b border-[var(--border)]">
+          <span className="text-sm font-semibold text-[var(--foreground)]">Run History</span>
+          <button onClick={() => setShowHistory(false)} className="text-[var(--muted)] hover:text-[var(--foreground)] text-lg">×</button>
+        </div>
+        <div className="flex-1 overflow-y-auto p-2 space-y-1">
+          {history.length === 0 && (
+            <p className="text-xs text-[var(--muted)] p-3">No runs yet.</p>
+          )}
+          {history.map((h) => (
+            <div key={h.run_id} className="group rounded-lg border border-[var(--border)] p-3 hover:bg-slate-50 cursor-pointer" onClick={() => { setRun(h); setShowHistory(false); }}>
+              <p className="text-sm font-medium text-[var(--foreground)] truncate">{h.keyword}</p>
+              <p className="text-xs text-[var(--muted)]">{new Date(h.created_at).toLocaleDateString()} · {h.status}</p>
+              <div className="mt-2 flex gap-1 opacity-0 group-hover:opacity-100 transition">
+                <button
+                  onClick={(e) => { e.stopPropagation(); exportDocx(h); }}
+                  className="text-xs px-2 py-0.5 rounded border border-[var(--border)] text-[var(--muted)] hover:text-[var(--foreground)]"
+                >
+                  .docx
+                </button>
+                <button
+                  onClick={(e) => { e.stopPropagation(); deleteRun(h.run_id); setHistory(loadHistory()); if (run?.run_id === h.run_id) setRun(null); }}
+                  className="text-xs px-2 py-0.5 rounded border border-red-200 text-red-500 hover:bg-red-50"
+                >
+                  Delete
+                </button>
+              </div>
+            </div>
+          ))}
+        </div>
+      </aside>
+
+      {showHistory && <div className="fixed inset-0 z-10 bg-black/20" onClick={() => setShowHistory(false)} />}
+
+      {/* Main */}
+      <div className="flex-1 flex flex-col max-w-4xl mx-auto px-4 py-8 w-full">
+        {/* Header */}
+        <div className="flex items-center justify-between mb-8">
+          <div className="flex items-center gap-3">
+            <span className="flex h-9 w-9 items-center justify-center rounded-lg bg-[var(--accent-soft)] text-[var(--accent)] text-sm font-bold">B</span>
+            <div>
+              <h1 className="text-lg font-semibold text-[var(--foreground)]">Blog Generator</h1>
+              <p className="text-xs text-[var(--muted)]">AEO/GEO · 7-agent pipeline · Harvard refs</p>
+            </div>
+          </div>
+          <button onClick={() => setShowHistory(true)} className="text-sm px-3 py-1.5 rounded-lg border border-[var(--border)] text-[var(--muted)] hover:text-[var(--foreground)]">
+            History ({history.length})
+          </button>
+        </div>
+
+        {/* Input form */}
+        {!run && (
+          <div className="rounded-xl border border-[var(--border)] bg-[var(--card)] p-6 space-y-4">
+            <div>
+              <label className="block text-xs font-medium text-[var(--muted)] mb-1">Keyword / Topic *</label>
+              <input
+                type="text"
+                value={input.keyword}
+                onChange={(e) => setInput((p) => ({ ...p, keyword: e.target.value }))}
+                placeholder="e.g. best CRM software for small businesses"
+                className="w-full rounded-lg border border-[var(--border)] bg-white px-3 py-2 text-sm text-[var(--foreground)] outline-none focus:border-[var(--accent)] focus:ring-2 focus:ring-[var(--accent-soft)]"
+                onKeyDown={(e) => { if (e.key === "Enter") runFullPipeline(); }}
+              />
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="block text-xs font-medium text-[var(--muted)] mb-1">Target Audience</label>
+                <input
+                  type="text"
+                  value={input.target_audience ?? ""}
+                  onChange={(e) => setInput((p) => ({ ...p, target_audience: e.target.value }))}
+                  placeholder="e.g. startup founders"
+                  className="w-full rounded-lg border border-[var(--border)] bg-white px-3 py-2 text-sm text-[var(--foreground)] outline-none focus:border-[var(--accent)]"
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-[var(--muted)] mb-1">Business Context</label>
+                <input
+                  type="text"
+                  value={input.business_context ?? ""}
+                  onChange={(e) => setInput((p) => ({ ...p, business_context: e.target.value }))}
+                  placeholder="e.g. SaaS company selling CRM"
+                  className="w-full rounded-lg border border-[var(--border)] bg-white px-3 py-2 text-sm text-[var(--foreground)] outline-none focus:border-[var(--accent)]"
+                />
+              </div>
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-[var(--muted)] mb-1">Existing URL <span className="text-[var(--muted)] font-normal">(optional — to analyze existing page)</span></label>
+              <input
+                type="url"
+                value={input.existing_url ?? ""}
+                onChange={(e) => setInput((p) => ({ ...p, existing_url: e.target.value }))}
+                placeholder="https://yoursite.com/existing-article"
+                className="w-full rounded-lg border border-[var(--border)] bg-white px-3 py-2 text-sm text-[var(--foreground)] outline-none focus:border-[var(--accent)]"
+              />
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-[var(--muted)] mb-1">E-E-A-T Notes <span className="text-[var(--muted)] font-normal">(personal experience, credentials, case results — woven in verbatim)</span></label>
+              <textarea
+                value={input.manual_eeat_notes ?? ""}
+                onChange={(e) => setInput((p) => ({ ...p, manual_eeat_notes: e.target.value }))}
+                placeholder="e.g. We ran this exact test across 12 clients in 2024 and found..."
+                rows={3}
+                className="w-full rounded-lg border border-[var(--border)] bg-white px-3 py-2 text-sm text-[var(--foreground)] outline-none focus:border-[var(--accent)] resize-none"
+              />
+            </div>
+            {error && <p className="text-sm text-red-600">{error}</p>}
+            <button
+              onClick={runFullPipeline}
+              className="w-full rounded-lg bg-[var(--accent)] py-2.5 text-sm font-medium text-white hover:bg-blue-700 transition"
+            >
+              Generate Article
+            </button>
+          </div>
+        )}
+
+        {/* Active run */}
+        {run && (
+          <div className="space-y-6">
+            {/* Run header */}
+            <div className="flex items-center justify-between">
+              <div>
+                <h2 className="text-base font-semibold text-[var(--foreground)]">{run.keyword}</h2>
+                <p className="text-xs text-[var(--muted)]">{run.status} · {new Date(run.created_at).toLocaleString()}</p>
+              </div>
+              <div className="flex gap-2">
+                {activePhase && (
+                  <button onClick={stopPipeline} className="text-sm px-3 py-1.5 rounded-lg border border-red-200 text-red-600 hover:bg-red-50">
+                    Stop
+                  </button>
+                )}
+                {!activePhase && (
+                  <>
+                    <button
+                      onClick={() => exportDocx(run)}
+                      disabled={exporting}
+                      className="text-sm px-3 py-1.5 rounded-lg border border-[var(--border)] text-[var(--muted)] hover:text-[var(--foreground)] disabled:opacity-50"
+                    >
+                      {exporting ? "Exporting…" : "Download .docx"}
+                    </button>
+                    <button
+                      onClick={() => { setRun(null); setInput({ keyword: "" }); setError(""); }}
+                      className="text-sm px-3 py-1.5 rounded-lg bg-[var(--accent)] text-white hover:bg-blue-700"
+                    >
+                      New run
+                    </button>
+                  </>
+                )}
+              </div>
+            </div>
+
+            {/* Phase tracker */}
+            <div className="rounded-xl border border-[var(--border)] bg-[var(--card)] p-4">
+              <div className="flex gap-2 flex-wrap">
+                {PHASE_LABELS.map((p, i) => {
+                  const isDone = completedPhases.includes(p.key);
+                  const isActive = activePhase === p.key;
+                  return (
+                    <div key={p.key} className="flex items-center gap-1.5">
+                      <div className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition ${
+                        isDone ? "bg-green-50 text-green-700 border border-green-200" :
+                        isActive ? "bg-[var(--accent-soft)] text-[var(--accent)] border border-[var(--accent)]" :
+                        "bg-slate-50 text-[var(--muted)] border border-[var(--border)]"
+                      }`}>
+                        {isDone ? "✓" : isActive ? "⟳" : String(i + 1)} {p.label}
+                      </div>
+                      {i < PHASE_LABELS.length - 1 && <span className="text-[var(--muted)] text-xs">→</span>}
+                    </div>
+                  );
+                })}
+              </div>
+              {progressMsg && (
+                <p className="mt-3 text-xs text-[var(--muted)] animate-pulse">{progressMsg}</p>
+              )}
+            </div>
+
+            {/* QA Gate result */}
+            {run.phases.p13 && (
+              <div className={`rounded-xl border p-4 ${run.phases.p13.gate_result === "PASS" ? "border-green-200 bg-green-50" : "border-amber-200 bg-amber-50"}`}>
+                <div className="flex items-center gap-2 mb-2">
+                  <span className={`text-sm font-semibold ${run.phases.p13.gate_result === "PASS" ? "text-green-700" : "text-amber-700"}`}>
+                    QA Gate: {run.phases.p13.gate_result}
+                  </span>
+                  <span className="text-xs text-[var(--muted)]">Humanize signal band: {run.phases.p115?.band ?? "—"} ({run.phases.p115?.post_edit_signal_score ?? "—"}/100)</span>
+                </div>
+                {run.phases.p13.failing_items?.length > 0 && (
+                  <ul className="text-xs text-amber-700 space-y-0.5 list-disc list-inside">
+                    {run.phases.p13.failing_items.map((f, i) => <li key={i}>{f}</li>)}
+                  </ul>
+                )}
+              </div>
+            )}
+
+            {/* Phase output panels */}
+            <div className="space-y-3">
+              {/* Research summary */}
+              {run.phases.p5 && (
+                <PhasePanel title="Research" badge={`${run.phases.p4?.gaps?.length ?? 0} gaps · ${run.phases.p5.target_word_count} word target`} expanded={expandedPhase === "research"} onToggle={() => setExpandedPhase(expandedPhase === "research" ? null : "research")}>
+                  <div className="space-y-3 text-sm">
+                    <div>
+                      <p className="text-xs font-medium text-[var(--muted)] mb-1">Angle</p>
+                      <p className="text-[var(--foreground)]">{run.phases.p5.angle_statement}</p>
+                    </div>
+                    <div>
+                      <p className="text-xs font-medium text-[var(--muted)] mb-1">Differentiation Points</p>
+                      <ul className="list-disc list-inside space-y-0.5 text-[var(--foreground)]">
+                        {run.phases.p5.differentiation_points?.map((d, i) => <li key={i}>{d}</li>)}
+                      </ul>
+                    </div>
+                    <div>
+                      <p className="text-xs font-medium text-[var(--muted)] mb-1">Gaps Found</p>
+                      <ul className="space-y-1">
+                        {run.phases.p4?.gaps?.map((g, i) => (
+                          <li key={i} className="text-[var(--foreground)]"><span className="font-medium">{g.topic}:</span> {g.why_it_matters}</li>
+                        ))}
+                      </ul>
+                    </div>
+                    {run.phases.p2?.fanout_queries && (
+                      <div>
+                        <p className="text-xs font-medium text-[var(--muted)] mb-1">Fan-out Queries ({run.phases.p2.fanout_queries.length})</p>
+                        <div className="flex flex-wrap gap-1">
+                          {run.phases.p2.fanout_queries.map((q, i) => (
+                            <span key={i} className="text-xs px-2 py-0.5 rounded-full bg-slate-100 text-[var(--muted)]">{q}</span>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                </PhasePanel>
+              )}
+
+              {/* Outline */}
+              {run.phases.p6 && (
+                <PhasePanel title="Outline" badge={`${run.phases.p6.sections?.length ?? 0} sections`} expanded={expandedPhase === "outline"} onToggle={() => setExpandedPhase(expandedPhase === "outline" ? null : "outline")}>
+                  <div className="text-sm space-y-2">
+                    <p className="font-semibold text-[var(--foreground)]">H1: {run.phases.p6.h1}</p>
+                    {run.phases.p6.sections?.map((s, i) => (
+                      <div key={i} className="pl-3 border-l-2 border-[var(--border)]">
+                        <p className="font-medium text-[var(--foreground)]">H2: {s.h2}</p>
+                        <p className="text-[var(--muted)] text-xs">{s.must_answer} · {s.format}{s.needs_citation ? " · citation needed" : ""}</p>
+                      </div>
+                    ))}
+                  </div>
+                </PhasePanel>
+              )}
+
+              {/* Fact-check / sources */}
+              {run.phases.p10 && (
+                <PhasePanel title="Sources & References" badge={`${run.phases.p8?.sourced_claims?.length ?? 0} sources · ${run.phases.p8?.suggested_images?.length ?? 0} images`} expanded={expandedPhase === "factcheck"} onToggle={() => setExpandedPhase(expandedPhase === "factcheck" ? null : "factcheck")}>
+                  <div className="text-sm space-y-3">
+                    {run.phases.p9?.corrections_needed?.length ? (
+                      <div>
+                        <p className="text-xs font-medium text-[var(--muted)] mb-1">Corrections applied ({run.phases.p9.corrections_needed.length})</p>
+                        <ul className="list-disc list-inside space-y-0.5 text-[var(--foreground)]">
+                          {run.phases.p9.corrections_needed.map((c, i) => <li key={i}>{c.issue}</li>)}
+                        </ul>
+                      </div>
+                    ) : null}
+                    {run.phases.p8?.suggested_images?.length ? (
+                      <div>
+                        <p className="text-xs font-medium text-[var(--muted)] mb-2">Images</p>
+                        <div className="space-y-2">
+                          {run.phases.p8.suggested_images.map((img, i) => (
+                            <div key={i} className="rounded-lg border border-[var(--border)] p-2 flex gap-3">
+                              {img.local_path && (
+                                // eslint-disable-next-line @next/next/no-img-element
+                                <img src={img.local_path} alt={img.caption} className="w-24 h-16 object-cover rounded flex-shrink-0" />
+                              )}
+                              <div>
+                                <p className="text-xs font-medium text-[var(--foreground)]">{img.caption}</p>
+                                <p className="text-xs text-[var(--muted)]">{img.attribution}</p>
+                                {!img.local_path && <p className="text-xs text-amber-600">Image not downloaded (restricted domain)</p>}
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    ) : null}
+                    {run.phases.p10.harvard_references?.length ? (
+                      <div>
+                        <p className="text-xs font-medium text-[var(--muted)] mb-1">Harvard References</p>
+                        <ol className="list-decimal list-inside space-y-1 text-xs text-[var(--foreground)]">
+                          {run.phases.p10.harvard_references.map((r, i) => <li key={i}>{r}</li>)}
+                        </ol>
+                      </div>
+                    ) : null}
+                  </div>
+                </PhasePanel>
+              )}
+
+              {/* Final article */}
+              {run.final_markdown && (
+                <PhasePanel
+                  title="Final Article"
+                  badge={`${run.final_markdown.split(/\s+/).length} words · ${run.phases.p115?.band ?? ""} AI signal`}
+                  expanded={expandedPhase === "article"}
+                  onToggle={() => setExpandedPhase(expandedPhase === "article" ? null : "article")}
+                >
+                  <div className="flex justify-end mb-3">
+                    <button
+                      onClick={() => navigator.clipboard.writeText(run.final_markdown ?? "")}
+                      className="text-xs px-3 py-1 rounded border border-[var(--border)] text-[var(--muted)] hover:text-[var(--foreground)]"
+                    >
+                      Copy markdown
+                    </button>
+                  </div>
+                  <pre className="text-xs font-mono bg-slate-50 rounded-lg p-4 overflow-x-auto whitespace-pre-wrap text-[var(--foreground)] max-h-[600px] overflow-y-auto">
+                    {run.final_markdown}
+                  </pre>
+                </PhasePanel>
+              )}
+            </div>
+
+            {error && (
+              <div className="rounded-lg border border-red-200 bg-red-50 p-4 text-sm text-red-700">{error}</div>
+            )}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function PhasePanel({
+  title,
+  badge,
+  expanded,
+  onToggle,
+  children,
+}: {
+  title: string;
+  badge?: string;
+  expanded: boolean;
+  onToggle: () => void;
+  children: React.ReactNode;
+}) {
+  return (
+    <div className="rounded-xl border border-[var(--border)] bg-[var(--card)] overflow-hidden">
+      <button
+        onClick={onToggle}
+        className="w-full flex items-center justify-between p-4 hover:bg-slate-50 transition text-left"
+      >
+        <div className="flex items-center gap-2">
+          <span className="text-sm font-medium text-[var(--foreground)]">{title}</span>
+          {badge && <span className="text-xs px-2 py-0.5 rounded-full bg-slate-100 text-[var(--muted)]">{badge}</span>}
+        </div>
+        <span className="text-[var(--muted)] text-sm">{expanded ? "▲" : "▼"}</span>
+      </button>
+      {expanded && <div className="px-4 pb-4 border-t border-[var(--border)]"><div className="pt-4">{children}</div></div>}
+    </div>
+  );
+}

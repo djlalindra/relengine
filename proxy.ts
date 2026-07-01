@@ -5,7 +5,9 @@ const SESSION_COOKIE = "aeo_session";
 
 const PUBLIC_PATHS = [
   "/login",
+  "/setup-2fa",
   "/api/login",
+  "/api/totp-setup",
   "/api/mcp",
   "/.well-known/oauth-protected-resource",
   "/.well-known/oauth-authorization-server",

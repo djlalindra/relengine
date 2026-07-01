@@ -11,6 +11,7 @@ function SetupContent() {
     secret: string;
     qrCodeUrl: string;
     isNew: boolean;
+    invalidStored?: boolean;
   } | null>(null);
   const [error, setError] = useState("");
   const [copied, setCopied] = useState(false);
@@ -64,11 +65,14 @@ function SetupContent() {
             </div>
           </div>
 
-          {data.isNew && (
+          {(data.isNew || data.invalidStored) && (
             <div className="rounded-lg border border-amber-200 bg-amber-50 p-4 text-sm text-amber-800">
+              {data.invalidStored && (
+                <p className="font-semibold mb-2">⚠ Your current TOTP_SECRET contains invalid characters and was replaced with a valid one.</p>
+              )}
               <p className="font-semibold mb-1">Save this to your Vercel environment variables:</p>
-              <p className="font-mono text-xs break-all">TOTP_SECRET={data.secret}</p>
-              <p className="mt-2">Then redeploy, and scan the QR code above.</p>
+              <p className="font-mono text-xs break-all select-all">TOTP_SECRET={data.secret}</p>
+              <p className="mt-2">Go to Vercel → Settings → Environment Variables → update TOTP_SECRET → Redeploy. Then scan the QR code above.</p>
             </div>
           )}
 

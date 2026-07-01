@@ -2923,6 +2923,12 @@ export default function Home() {
                 {tab.label}
               </button>
             ))}
+            <a
+              href="/blog-gen"
+              className="flex shrink-0 items-center gap-1.5 rounded-full px-3.5 py-1.5 text-xs font-medium border border-[var(--border)] text-[var(--muted)] hover:border-[var(--accent)] hover:text-[var(--accent)] transition"
+            >
+              ✍ Blog Gen
+            </a>
           </div>
         </nav>
       </header>

@@ -61,13 +61,17 @@ export function verifyTOTP(secret: string, token: string): boolean {
 }
 
 /**
- * Returns the Google Charts QR code URL for scanning into an authenticator app.
- * The QR encodes a standard otpauth:// URI compatible with Google Authenticator,
- * Authy, 1Password, and any RFC 6238-compliant app.
+ * Returns a QR code image URL for scanning into Google Authenticator.
+ * Uses api.qrserver.com which does not require API keys and works from Vercel.
  */
 export function getQrCodeUrl(secret: string, label = "Relevance Engineering"): string {
   const uri = `otpauth://totp/${encodeURIComponent(label)}?secret=${secret}&issuer=${encodeURIComponent(label)}&algorithm=SHA1&digits=6&period=30`;
-  return `https://chart.googleapis.com/chart?chs=256x256&chld=M|0&cht=qr&chl=${encodeURIComponent(uri)}`;
+  return `https://api.qrserver.com/v1/create-qr-code/?size=256x256&margin=10&data=${encodeURIComponent(uri)}`;
+}
+
+/** Returns true if the secret contains only valid base32 characters (A-Z, 2-7). */
+export function isValidBase32(secret: string): boolean {
+  return /^[A-Z2-7]{16,}$/i.test(secret.replace(/\s/g, ""));
 }
 
 export function getTOTPSecret(): string {
