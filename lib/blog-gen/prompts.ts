@@ -148,6 +148,12 @@ Phase 10 — compile Harvard-style references for all sourced claims used in the
 Harvard format: Author Surname, Initial(s). (Year) 'Title of article/page', *Publisher/Journal*, [online]. Available at: URL (Accessed: Day Month Year).
 If author is unknown use the organisation name. If year is unknown use (n.d.).
 
+CRITICAL — inline citations in corrected_markdown:
+For every claim that has a matched source, embed a short inline citation immediately after the claim using markdown hyperlink syntax: [Author, Year](url)
+Example: "Law firms that invest in SEO see 3× more inbound leads. [Clio, 2024](https://clio.com/...)"
+Replace any [NEEDS SOURCE: ...] placeholders with either the inline citation or remove the placeholder if no source was found.
+Preserve all other text, headings, and structure exactly.
+
 Output JSON:
 {
   "p9": {
@@ -175,6 +181,7 @@ Run Phase 12. Check:
 - If manual_eeat_notes were supplied, confirm they landed intact and read naturally, not bolted on.
 
 Make targeted edits only — do not rewrite sections that don't need it.
+IMPORTANT: preserve all inline citation links [Author, Year](url) exactly — do not remove or alter them.
 
 Output JSON:
 {
@@ -190,6 +197,7 @@ export function buildHumanizePrompt(draftMarkdown: string, rerunComment?: string
 ${draftMarkdown}
 
 Run Phase 11.5. Apply the humanization pass per your system instructions. Score before and after.
+IMPORTANT: preserve all inline citation links [Author, Year](url) exactly — do not remove or alter them.
 
 Output JSON:
 {
