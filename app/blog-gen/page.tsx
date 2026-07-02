@@ -18,6 +18,7 @@ import type {
   Phase12Output,
   Phase115Output,
   Phase13Output,
+  SourceBriefOutput,
   SuggestedImage,
 } from "@/lib/blog-gen/types";
 
@@ -228,11 +229,12 @@ async function streamPhase(
 const PHASE_LABELS = [
   { key: "research", label: "Research", subtitle: "Intent · Entities · Fan-out · Gap analysis" },
   { key: "outline", label: "Outline", subtitle: "Answer-first structure" },
-  { key: "draft", label: "Draft", subtitle: "Full article (Claude Sonnet 5)" },
-  { key: "factcheck", label: "Fact-check", subtitle: "Sources · Images · Harvard refs" },
+  { key: "source_brief", label: "Source Brief", subtitle: "Real stats & authoritative URLs before drafting" },
+  { key: "draft", label: "Draft", subtitle: "Full article with real citations (Claude Sonnet 5)" },
+  { key: "factcheck", label: "Fact-check", subtitle: "Verify · Images · Harvard refs" },
   { key: "polish", label: "E-E-A-T", subtitle: "Expertise signals (Claude Sonnet 5)" },
   { key: "humanize", label: "Humanize", subtitle: "Remove AI tells (Claude Sonnet 5)" },
-  { key: "critic", label: "Critic", subtitle: "QA gate (Claude Sonnet 5)" },
+  { key: "critic", label: "Critic", subtitle: "QA gate (Gemini)" },
 ];
 
 type PhaseKey = typeof PHASE_LABELS[number]["key"];
@@ -317,10 +319,33 @@ export default function BlogGenPage() {
 
       update((r) => ({ ...r, phases: { ...r.phases, p6: outline }, updated_at: new Date().toISOString() }));
 
+      setActivePhase("source_brief");
+      let sourceBrief: SourceBriefOutput | undefined;
+      try {
+        sourceBrief = await streamPhase(
+          "/api/blog-gen/source-brief",
+          { keyword: input.keyword.trim(), outline },
+          progress, abort.signal
+        ) as SourceBriefOutput;
+        update((r) => ({ ...r, phases: { ...r.phases, source_brief: sourceBrief }, updated_at: new Date().toISOString() }));
+      } catch {
+        // source brief is best-effort — draft proceeds without it if it fails
+      }
+
+      const sourceBriefText = sourceBrief?.sources?.length
+        ? sourceBrief.sources.map((s) => `- ${s.stat_or_finding} [${s.source_label}](${s.url}) → supports: ${s.section_relevance}`).join("\n")
+        : undefined;
+
       setActivePhase("draft");
       const draft = await streamPhase(
         "/api/blog-gen/draft",
-        { outline, research, target_word_count: research.p5?.target_word_count ?? 1800, manual_eeat_notes: input.manual_eeat_notes ?? "" },
+        {
+          outline,
+          research,
+          target_word_count: research.p5?.target_word_count ?? 1800,
+          manual_eeat_notes: input.manual_eeat_notes ?? "",
+          source_brief: sourceBriefText,
+        },
         progress, abort.signal
       ) as Phase7Output;
 
@@ -418,12 +443,13 @@ export default function BlogGenPage() {
     abortRef.current = abort;
     const progress = (msg: string) => setProgressMsg(msg);
 
-    const PHASE_ORDER: PhaseKey[] = ["research", "outline", "draft", "factcheck", "polish", "humanize", "critic"];
+    const PHASE_ORDER: PhaseKey[] = ["research", "outline", "source_brief", "draft", "factcheck", "polish", "humanize", "critic"];
     const startIdx = PHASE_ORDER.indexOf(startPhase);
 
     // Seed local data from current run — updated as each phase produces fresh output
     let researchData = { p0: run.phases.p0, p1: run.phases.p1, p2: run.phases.p2, p3: run.phases.p3, p4: run.phases.p4, p5: run.phases.p5 };
     let outlineData: Phase6Output | undefined = run.phases.p6;
+    let sourceBriefData: SourceBriefOutput | undefined = run.phases.source_brief;
     let draftData: Phase7Output | undefined = run.phases.p7;
     let correctedMd: string | undefined;
     let p8Data = run.phases.p8;
@@ -460,7 +486,20 @@ export default function BlogGenPage() {
           ) as Phase6Output;
           updateRun((r) => ({ ...r, phases: { ...r.phases, p6: outlineData }, updated_at: new Date().toISOString() }));
 
+        } else if (phase === "source_brief") {
+          try {
+            sourceBriefData = await streamPhase(
+              "/api/blog-gen/source-brief",
+              { keyword: run.keyword, outline: outlineData },
+              progress, abort.signal
+            ) as SourceBriefOutput;
+            updateRun((r) => ({ ...r, phases: { ...r.phases, source_brief: sourceBriefData }, updated_at: new Date().toISOString() }));
+          } catch { /* best-effort */ }
+
         } else if (phase === "draft") {
+          const sourceBriefText = sourceBriefData?.sources?.length
+            ? sourceBriefData.sources.map((s) => `- ${s.stat_or_finding} [${s.source_label}](${s.url}) → supports: ${s.section_relevance}`).join("\n")
+            : undefined;
           draftData = await streamPhase(
             "/api/blog-gen/draft",
             {
@@ -468,6 +507,7 @@ export default function BlogGenPage() {
               research: researchData,
               target_word_count: researchData.p5?.target_word_count ?? 1800,
               manual_eeat_notes: run.input.manual_eeat_notes ?? "",
+              source_brief: sourceBriefText,
               rerun_comment: phaseComment,
             },
             progress, abort.signal
@@ -575,6 +615,7 @@ export default function BlogGenPage() {
     ? PHASE_LABELS.filter((p) => {
         if (p.key === "research") return !!run.phases.p0;
         if (p.key === "outline") return !!run.phases.p6;
+        if (p.key === "source_brief") return !!run.phases.source_brief;
         if (p.key === "draft") return !!run.phases.p7;
         if (p.key === "factcheck") return !!run.phases.p9;
         if (p.key === "polish") return !!run.phases.p12;

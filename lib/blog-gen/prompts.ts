@@ -103,6 +103,7 @@ export function buildDraftPrompt(
   research: string,
   targetWordCount: number,
   manualEeatNotes: string,
+  sourceBrief?: string,
   rerunComment?: string
 ): string {
   return `Research brief:
@@ -114,7 +115,7 @@ ${outline}
 Target word count: ${targetWordCount} words (±10%).
 ${manualEeatNotes ? `Manual E-E-A-T notes to weave in naturally (do not paraphrase, do not upgrade claims beyond what the user wrote): ${manualEeatNotes}` : ""}
 
-IMPORTANT: Include a minimum of 6–7 statistics, percentages, or data benchmarks distributed naturally across sections. Use [NEEDS SOURCE: exact claim] for each one so fact-checking can supply verified citations.
+${sourceBrief ? `VERIFIED SOURCE BRIEF — use these real statistics and findings when writing. For each stat you use, embed an inline citation immediately at the end of the sentence (no line break) using: [Source Label](url). Example: "73% of clients research law firms online before making contact. [Clio, 2024](https://clio.com/...)"\n\nSources:\n${sourceBrief}\n\nIMPORTANT: embed the citation directly attached to the sentence end — on the SAME LINE, no blank line before or after the citation link.` : "IMPORTANT: Include a minimum of 6–7 statistics, percentages, or data benchmarks distributed naturally across sections. Use [NEEDS SOURCE: exact claim] for each one so fact-checking can supply verified citations."}
 
 Write the full draft following all constraints in your system prompt. Output JSON:
 {
@@ -149,8 +150,11 @@ Harvard format: Author Surname, Initial(s). (Year) 'Title of article/page', *Pub
 If author is unknown use the organisation name. If year is unknown use (n.d.).
 
 CRITICAL — inline citations in corrected_markdown:
-For every claim that has a matched source, embed a short inline citation immediately after the claim using markdown hyperlink syntax: [Author, Year](url)
-Example: "Law firms that invest in SEO see 3× more inbound leads. [Clio, 2024](https://clio.com/...)"
+For every claim that has a matched source, embed a short inline citation directly at the end of the sentence, ON THE SAME LINE — no line break before or after the citation link.
+Use markdown hyperlink syntax: [Author, Year](url)
+CORRECT: "Law firms that invest in SEO see 3× more inbound leads. [Clio, 2024](https://clio.com/...)\n\nNext paragraph..."
+WRONG: "Law firms that invest in SEO see 3× more inbound leads.\n\n[Clio, 2024](https://clio.com/...)\n\nNext paragraph..."
+The citation must be on the same line as the claim — never on its own line or its own paragraph.
 Replace any [NEEDS SOURCE: ...] placeholders with either the inline citation or remove the placeholder if no source was found.
 Preserve all other text, headings, and structure exactly.
 

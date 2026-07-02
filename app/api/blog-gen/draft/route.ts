@@ -19,6 +19,7 @@ export async function POST(req: NextRequest) {
     research?: unknown;
     target_word_count?: number;
     manual_eeat_notes?: string;
+    source_brief?: string;
     rerun_comment?: string;
   };
   try {
@@ -49,6 +50,7 @@ export async function POST(req: NextRequest) {
             JSON.stringify(body.research, null, 2),
             body.target_word_count ?? 1800,
             body.manual_eeat_notes ?? "",
+            body.source_brief,
             body.rerun_comment
           ),
           { model: SONNET_5, maxTokens: 12000, signal: controller.signal }

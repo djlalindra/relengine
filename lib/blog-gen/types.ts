@@ -68,6 +68,18 @@ export interface OutlineSection {
   needs_citation: boolean;
 }
 
+export interface SourceBriefItem {
+  url: string;
+  title: string;
+  stat_or_finding: string;
+  source_label: string;
+  section_relevance: string;
+}
+
+export interface SourceBriefOutput {
+  sources: SourceBriefItem[];
+}
+
 export interface Phase6Output {
   h1: string;
   sections: OutlineSection[];
@@ -189,6 +201,7 @@ export interface BlogGenRun {
     p3?: Phase3Output;
     p4?: Phase4Output;
     p5?: Phase5Output;
+    source_brief?: SourceBriefOutput;
     p6?: Phase6Output;
     p7?: Phase7Output;
     p8?: Phase8Output;
