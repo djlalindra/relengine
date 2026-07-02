@@ -1,5 +1,5 @@
 import { NextRequest } from "next/server";
-import { callClaude, SONNET_5 } from "@/lib/blog-gen/anthropic-client";
+import { callModel } from "@/lib/pipeline/model-client";
 import { buildCriticPrompt, CRITIC_SYSTEM } from "@/lib/blog-gen/prompts";
 
 function sse(data: object): string {
@@ -34,12 +34,14 @@ export async function POST(req: NextRequest) {
       const send = (data: object) => streamController.enqueue(encoder.encode(sse(data)));
 
       try {
-        send({ type: "progress", step: "Critic review — QA gate (Claude Sonnet 5)…" });
+        send({ type: "progress", step: "Critic review — QA gate (Gemini)…" });
 
-        const raw = await callClaude(
-          CRITIC_SYSTEM,
-          buildCriticPrompt(body.final_markdown!, body.rerun_comment),
-          { model: SONNET_5, maxTokens: 8000, signal: controller.signal }
+        const raw = await callModel(
+          [
+            { role: "system", content: CRITIC_SYSTEM },
+            { role: "user", content: buildCriticPrompt(body.final_markdown!, body.rerun_comment) },
+          ],
+          { maxTokens: 8000, jsonMode: true, signal: controller.signal }
         );
 
         const result = parseJson(raw);
