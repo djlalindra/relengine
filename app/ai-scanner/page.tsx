@@ -341,7 +341,7 @@ function scan(text: string): ScanResult {
     for (const para of paragraphs) {
       const sents = para.match(/[^.!?]+[.!?]*/g) ?? [];
       if (sents.length >= 3) {
-        const hasTopic = /^[A-Z]/.test(sents[0].trim());
+        const hasTopic = /^[A-Z]/.test((sents[0] ?? "").trim());
         const hasConnector = /\b(this|these|by)\b/i.test(sents[Math.floor(sents.length / 2)] ?? "");
         const lastSent = sents[sents.length - 1].toLowerCase();
         const hasClose = /^(this|these|as a result|consequently|therefore)\b/.test(lastSent.trim());
