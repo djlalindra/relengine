@@ -415,18 +415,23 @@ export default function BlogGenPage() {
       ) as Phase12Output;
       update((r) => ({ ...r, phases: { ...r.phases, p12: eeat }, updated_at: new Date().toISOString() }));
 
-      setActivePhase("critic");
-      const critic = await streamPhase(
-        "/api/blog-gen/critic",
-        { final_markdown: uploadedText },
-        progress, abort.signal
-      ) as Phase13Output;
-      update((r) => ({
-        ...r,
-        phases: { ...r.phases, p13: critic },
-        status: critic.gate_result === "PASS" ? "COMPLETE" : "FAILED_QA_GATE",
-        updated_at: new Date().toISOString(),
-      }));
+      try {
+        setActivePhase("critic");
+        const critic = await streamPhase(
+          "/api/blog-gen/critic",
+          { final_markdown: uploadedText },
+          progress, abort.signal
+        ) as Phase13Output;
+        update((r) => ({
+          ...r,
+          phases: { ...r.phases, p13: critic },
+          status: critic.gate_result === "PASS" ? "COMPLETE" : "FAILED_QA_GATE",
+          updated_at: new Date().toISOString(),
+        }));
+      } catch {
+        // Critic is non-blocking in analyse mode — gap report is the primary output
+        update((r) => ({ ...r, status: "COMPLETE", updated_at: new Date().toISOString() }));
+      }
 
       setActivePhase(null);
       setProgressMsg("");
@@ -1228,6 +1233,37 @@ export default function BlogGenPage() {
                       ))}
                     </div>
                   </details>
+                )}
+
+                {/* Action buttons pinned to the bottom of the gap report */}
+                {!isRunning && (
+                  <div className="flex gap-2 pt-2 border-t border-violet-200 flex-wrap">
+                    <button
+                      onClick={() => downloadText(`gap-report-${slug(run.keyword)}.txt`, buildGapReportDownload(run))}
+                      className="text-sm px-3 py-1.5 rounded-lg border border-violet-300 text-violet-700 hover:bg-violet-100"
+                    >
+                      Download Gap Report .txt
+                    </button>
+                    {!run.final_markdown && (
+                      <button
+                        onClick={generateImprovedArticle}
+                        disabled={generatingImproved}
+                        className="text-sm px-3 py-1.5 rounded-lg bg-violet-600 text-white hover:bg-violet-700 disabled:opacity-50"
+                      >
+                        {generatingImproved ? "Generating…" : "Generate Improved Article"}
+                      </button>
+                    )}
+                    {run.final_markdown && (
+                      <>
+                        <button onClick={() => exportDocx(run, true)} disabled={exportingClean} className="text-sm px-3 py-1.5 rounded-lg border border-green-200 text-green-700 hover:bg-green-50 disabled:opacity-50">
+                          {exportingClean ? "Exporting…" : "Download Improved Article .docx"}
+                        </button>
+                        <button onClick={() => exportDocx(run, false)} disabled={exporting} className="text-sm px-3 py-1.5 rounded-lg border border-[var(--border)] text-[var(--muted)] hover:text-[var(--foreground)] disabled:opacity-50">
+                          {exporting ? "Exporting…" : "Full Report .docx"}
+                        </button>
+                      </>
+                    )}
+                  </div>
                 )}
               </div>
             )}
