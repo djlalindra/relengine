@@ -217,10 +217,10 @@ function scan(text: string): ScanResult {
   // --- Cat 5: Negative Parallelism ---
   {
     const patterns = [
-      /not (?:just|only)\b.{0,90}\bbut/gis,
-      /it's not.{0,60}it's/gis,
-      /not a.{0,50}but a/gis,
-      /rather than.{0,60}instead/gis,
+      /not (?:just|only)\b[\s\S]{0,90}\bbut/gi,
+      /it's not[\s\S]{0,60}it's/gi,
+      /not a[\s\S]{0,50}but a/gi,
+      /rather than[\s\S]{0,60}instead/gi,
     ];
     let pts = 0;
     const catFlags: Flag[] = [];
