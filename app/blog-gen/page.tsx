@@ -153,6 +153,53 @@ function buildOutlineDownload(run: BlogGenRun): string {
   return lines.join("\n");
 }
 
+function buildGapReportDownload(run: BlogGenRun): string {
+  const g = run.phases.doc_gap;
+  if (!g) return "";
+  const lines = [
+    `DRAFT ANALYSIS REPORT — "${run.keyword}"`,
+    `Generated: ${new Date(run.created_at).toLocaleString()}`,
+    `Overall score: ${g.overall_score}/100`,
+    `Verdict: ${g.overall_verdict}`,
+    "",
+    "═══════════════════════════════════════",
+    "QUICK WINS",
+    "═══════════════════════════════════════",
+    ...(g.quick_wins?.map((w, i) => `${i + 1}. [${w.impact.toUpperCase()}] ${w.title}\n   ${w.description}`) ?? ["—"]),
+    "",
+    "═══════════════════════════════════════",
+    "MISSING SECTIONS",
+    "═══════════════════════════════════════",
+    ...(g.missing_sections?.length ? g.missing_sections.map((s, i) => `${i + 1}. ${s.h2}\n   Why needed: ${s.why_needed}\n   Suggested content: ${s.suggested_content}`) : ["None"]),
+    "",
+    "═══════════════════════════════════════",
+    "WEAK SECTIONS",
+    "═══════════════════════════════════════",
+    ...(g.weak_sections?.length ? g.weak_sections.map((s, i) => `${i + 1}. ${s.heading}\n   Issue: ${s.current_issue}\n   Fix: ${s.specific_fix}`) : ["None"]),
+    "",
+    "═══════════════════════════════════════",
+    "UNSOURCED CLAIMS",
+    "═══════════════════════════════════════",
+    ...(g.unsourced_claims?.length ? g.unsourced_claims.map((c, i) => `${i + 1}. "${c.claim}"\n   Location: ${c.location}\n   Suggested source type: ${c.suggested_source_type}`) : ["None"]),
+    "",
+    "═══════════════════════════════════════",
+    "MISSING ENTITIES",
+    "═══════════════════════════════════════",
+    ...(g.missing_entities?.length ? g.missing_entities.map((e) => `• ${e.entity} (${e.type}) — add to: ${e.where_to_add}`) : ["None"]),
+    "",
+    "═══════════════════════════════════════",
+    "E-E-A-T GAPS",
+    "═══════════════════════════════════════",
+    ...(g.eeat_gaps?.length ? g.eeat_gaps.map((e, i) => `${i + 1}. ${e.signal}\n   Current: ${e.current}\n   Fix: ${e.fix}`) : ["None"]),
+    "",
+    "═══════════════════════════════════════",
+    "STRUCTURAL ISSUES",
+    "═══════════════════════════════════════",
+    ...(g.structural_issues?.length ? g.structural_issues.map((s, i) => `${i + 1}. ${s.issue}\n   Location: ${s.location}\n   Fix: ${s.fix}`) : ["None"]),
+  ];
+  return lines.join("\n");
+}
+
 function buildSourcesDownload(run: BlogGenRun): string {
   const { p8, p9, p10 } = run.phases;
   const lines = [
@@ -900,6 +947,14 @@ export default function BlogGenPage() {
                 )}
                 {!isRunning && (
                   <>
+                    {run.phases.doc_gap && (
+                      <button
+                        onClick={() => downloadText(`gap-report-${slug(run.keyword)}.txt`, buildGapReportDownload(run))}
+                        className="text-sm px-3 py-1.5 rounded-lg border border-violet-200 text-violet-700 hover:bg-violet-50"
+                      >
+                        Download Gap Report .txt
+                      </button>
+                    )}
                     {run.final_markdown && (
                       <>
                         <button onClick={() => exportDocx(run, true)} disabled={exportingClean} className="text-sm px-3 py-1.5 rounded-lg border border-green-200 text-green-700 hover:bg-green-50 disabled:opacity-50">
