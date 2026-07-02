@@ -1,7 +1,5 @@
 import { NextRequest } from "next/server";
-import Anthropic from "@anthropic-ai/sdk";
-
-const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+import { callClaude } from "@/lib/blog-gen/anthropic-client";
 
 export async function POST(req: NextRequest) {
   let body: { text?: string; scan_report?: object };
@@ -40,15 +38,7 @@ export async function POST(req: NextRequest) {
   const stream = new ReadableStream({
     async start(controller) {
       try {
-        const response = await client.messages.create({
-          model: "claude-sonnet-4-6",
-          max_tokens: 4000,
-          system,
-          messages: [{ role: "user", content: userMsg }],
-          stream: false,
-        });
-
-        const text = response.content[0]?.type === "text" ? response.content[0].text : "";
+        const text = await callClaude(system, userMsg, { model: "claude-sonnet-4-6", maxTokens: 4000 });
         controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: "result", text })}\n\n`));
       } catch (err) {
         controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: "error", error: err instanceof Error ? err.message : "Unknown error" })}\n\n`));
