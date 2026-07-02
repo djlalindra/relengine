@@ -120,17 +120,17 @@ ${sourceBrief ? `VERIFIED SOURCE BRIEF — use these real statistics and finding
 Sources:
 ${sourceBrief}
 
-HOW TO USE SOURCES — name the source in the sentence, and hyperlink the stat/finding itself:
-  GOOD: "A 2024 Clio report found that [73% of law firm clients research firms online before making contact](https://clio.com/...)."
-  GOOD: "According to the ABA's 2024 Legal Technology Survey, firms using SEO [generate leads at 40% lower cost than PPC](https://americanbar.org/...)."
-  GOOD: "LeadVerdict's 2024 study found that [organic search converts at 3× the rate of paid ads](https://leadverdict.com/)."
-  BAD: "73% of clients research law firms online. [Clio, 2024](https://clio.com/...)"  ← source not named in prose; link is a tag not on the stat
-  BAD: "A 2024 Clio report found that 73% of clients research online. [Clio, 2024](https://clio.com/...)"  ← trailing citation tag, link not on the stat
+HOW TO USE SOURCES — name the source in the sentence, and hyperlink a concise anchor phrase (the key number or short finding, not the whole sentence):
+  GOOD: "A 2024 Clio report found that [73% of law firm clients](https://clio.com/...) research firms online before making contact."
+  GOOD: "According to the ABA's 2024 Legal Technology Survey, firms using SEO generate leads at [40% lower cost than PPC](https://americanbar.org/...)."
+  GOOD: "LeadVerdict's 2024 study found organic search converts at [3× the rate of paid ads](https://leadverdict.com/)."
+  BAD: "73% of clients research law firms online. [Clio, 2024](https://clio.com/...)"  ← source not in prose; link is a tag not on the stat
+  BAD: "A 2024 Clio report found that [73% of law firm clients research firms online before making contact and do so across multiple devices before hiring](url)"  ← anchor text too long
 
 Rules:
 - Name the organisation and year inside the sentence ("A 2024 Clio report...", "According to LinkGraph's 2024 analysis...")
-- The markdown hyperlink wraps the actual statistic or finding, NOT a trailing [Org, Year] tag
-- No trailing citation marker after the sentence — the link is already on the stat
+- Anchor text = the key number or shortest meaningful phrase (3–8 words max)
+- No trailing [Org, Year] tag — the link is already embedded in the sentence
 - Use 6–7 of these sourced sentences distributed across sections where they add the most weight
 - Only use stats from the source brief above; do not invent numbers` : "IMPORTANT: Include a minimum of 6–7 statistics, percentages, or data benchmarks distributed naturally across sections. Use [NEEDS SOURCE: exact claim] for each one so fact-checking can supply verified citations."}
 
@@ -168,12 +168,12 @@ If author is unknown use the organisation name. If year is unknown use (n.d.).
 
 CRITICAL — inline citations in corrected_markdown:
 For every [NEEDS SOURCE: claim] placeholder that has a matched source:
-1. Rewrite the sentence to name the source organisation and year within the prose, and hyperlink the stat itself:
-   GOOD: "A 2024 Clio report found that [73% of law firm clients research online before hiring](https://clio.com/...)."
-   GOOD: "According to the ABA's 2024 Legal Trends data, firms with active SEO strategies [see 40% lower acquisition costs](https://americanbar.org/...)."
-   BAD: "73% of clients research law firms online. [Clio, 2024](https://clio.com/...)"  ← source not in prose; link is a tag, not on the stat
-   BAD: "A 2024 Clio report found that 73% research online. [Clio, 2024](url)"  ← trailing tag; link should be on the stat, not appended
-2. The markdown link wraps the statistic or finding text — never a trailing [Org, Year] tag after the sentence.
+1. Rewrite the sentence to name the source organisation and year within the prose, and hyperlink a concise anchor phrase (the key number or short finding, not the whole sentence):
+   GOOD: "A 2024 Clio report found that [73% of law firm clients](https://clio.com/...) research online before hiring."
+   GOOD: "According to the ABA's 2024 Legal Trends data, firms with active SEO strategies see [40% lower acquisition costs](https://americanbar.org/...)."
+   BAD: "73% of clients research law firms online. [Clio, 2024](url)"  ← source not in prose; link is a trailing tag
+   BAD: "A 2024 Clio report found that [73% of law firm clients research online before hiring and across multiple touchpoints](url)"  ← anchor too long
+2. Anchor text should be 3–8 words max — the number or core finding only. No trailing [Org, Year] tag.
 3. If no source was found for a placeholder, remove the placeholder entirely and rewrite the sentence without the statistic.
 Preserve all other text, headings, and structure exactly.
 
