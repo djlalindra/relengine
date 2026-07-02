@@ -177,6 +177,18 @@ export interface Phase13Output {
   gate_result: "PASS" | "FAIL";
 }
 
+export interface DocGapOutput {
+  missing_sections: { h2: string; why_needed: string; suggested_content: string }[];
+  weak_sections: { heading: string; current_issue: string; specific_fix: string }[];
+  missing_entities: { entity: string; type: string; where_to_add: string }[];
+  unsourced_claims: { claim: string; location: string; suggested_source_type: string }[];
+  eeat_gaps: { signal: string; current: string; fix: string }[];
+  structural_issues: { issue: string; location: string; fix: string }[];
+  quick_wins: { title: string; description: string; impact: "high" | "medium" }[];
+  overall_score: number;
+  overall_verdict: string;
+}
+
 export interface BlogGenRun {
   run_id: string;
   keyword: string;
@@ -211,8 +223,10 @@ export interface BlogGenRun {
     p12?: Phase12Output;
     p115?: Phase115Output;
     p13?: Phase13Output;
+    doc_gap?: DocGapOutput;
   };
   final_markdown?: string;
+  uploaded_article_text?: string;
   title?: string;
   meta_description?: string;
 }

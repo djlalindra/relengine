@@ -1,9 +1,10 @@
 "use client";
 
-import { useState, useRef, useCallback } from "react";
+import { useState, useRef, useCallback, useEffect } from "react";
 import type {
   BlogGenRun,
   BlogGenInput,
+  DocGapOutput,
   Phase0Output,
   Phase1Output,
   Phase2Output,
@@ -262,6 +263,15 @@ export default function BlogGenPage() {
   const [rerunState, setRerunState] = useState<RerunState | null>(null);
   const abortRef = useRef<AbortController | null>(null);
 
+  // Upload-and-analyse mode
+  const [mode, setMode] = useState<"generate" | "analyse">("generate");
+  const [uploadFile, setUploadFile] = useState<File | null>(null);
+  const [uploadState, setUploadState] = useState<"idle" | "extracting" | "done" | "error">("idle");
+  const [uploadedText, setUploadedText] = useState("");
+  const [uploadWordCount, setUploadWordCount] = useState(0);
+  const [uploadError, setUploadError] = useState("");
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
   const updateRun = useCallback((updater: (prev: BlogGenRun) => BlogGenRun) => {
     setRun((prev) => {
       if (!prev) return prev;
@@ -271,6 +281,114 @@ export default function BlogGenPage() {
       return next;
     });
   }, []);
+
+  async function handleFileUpload(file: File) {
+    setUploadFile(file);
+    setUploadState("extracting");
+    setUploadError("");
+    setUploadedText("");
+
+    const formData = new FormData();
+    formData.append("file", file);
+
+    try {
+      const resp = await fetch("/api/blog-gen/extract-doc", { method: "POST", body: formData });
+      const data = await resp.json() as { text?: string; word_count?: number; suggested_keyword?: string; core_topic?: string; error?: string };
+      if (!resp.ok || data.error) throw new Error(data.error ?? "Extraction failed.");
+
+      setUploadedText(data.text ?? "");
+      setUploadWordCount(data.word_count ?? 0);
+      if (data.suggested_keyword && !input.keyword.trim()) {
+        setInput((p) => ({ ...p, keyword: data.suggested_keyword! }));
+      }
+      setUploadState("done");
+    } catch (err) {
+      setUploadError(err instanceof Error ? err.message : "Failed to read file.");
+      setUploadState("error");
+    }
+  }
+
+  async function runAnalysePipeline() {
+    if (!input.keyword.trim()) { setError("Enter a keyword to continue."); return; }
+    if (!uploadedText) { setError("Upload a document first."); return; }
+    setError("");
+
+    const runId = generateRunId();
+    const keyword = input.keyword.trim();
+    const newRun: BlogGenRun = {
+      run_id: runId,
+      keyword,
+      status: "RUNNING",
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+      input,
+      phases: {},
+      uploaded_article_text: uploadedText,
+    };
+    setRun(newRun);
+    saveRun(newRun);
+    setHistory(loadHistory());
+
+    const abort = new AbortController();
+    abortRef.current = abort;
+    const progress = (msg: string) => setProgressMsg(msg);
+    const update = (updater: (prev: BlogGenRun) => BlogGenRun) => updateRun(updater);
+
+    try {
+      setActivePhase("research");
+      const research = await streamPhase(
+        "/api/blog-gen/research",
+        { ...input, keyword },
+        progress, abort.signal
+      ) as { p0?: Phase0Output; p1?: Phase1Output; p2?: Phase2Output; p3?: Phase3Output; p4?: Phase4Output; p5?: Phase5Output };
+      update((r) => ({ ...r, phases: { ...r.phases, p0: research.p0, p1: research.p1, p2: research.p2, p3: research.p3, p4: research.p4, p5: research.p5 }, updated_at: new Date().toISOString() }));
+
+      setActivePhase("outline");
+      const outline = await streamPhase(
+        "/api/blog-gen/outline",
+        { keyword, research },
+        progress, abort.signal
+      ) as Phase6Output;
+      update((r) => ({ ...r, phases: { ...r.phases, p6: outline }, updated_at: new Date().toISOString() }));
+
+      setActivePhase("doc_gap" as PhaseKey);
+      const docGap = await streamPhase(
+        "/api/blog-gen/doc-gap",
+        { article_text: uploadedText, keyword, research, ideal_outline: outline },
+        progress, abort.signal
+      ) as DocGapOutput;
+      update((r) => ({ ...r, phases: { ...r.phases, doc_gap: docGap }, updated_at: new Date().toISOString() }));
+
+      setActivePhase("polish");
+      const eeat = await streamPhase(
+        "/api/blog-gen/polish",
+        { draft_markdown: uploadedText, manual_eeat_notes: input.manual_eeat_notes ?? "" },
+        progress, abort.signal
+      ) as Phase12Output;
+      update((r) => ({ ...r, phases: { ...r.phases, p12: eeat }, updated_at: new Date().toISOString() }));
+
+      setActivePhase("critic");
+      const critic = await streamPhase(
+        "/api/blog-gen/critic",
+        { final_markdown: uploadedText },
+        progress, abort.signal
+      ) as Phase13Output;
+      update((r) => ({
+        ...r,
+        phases: { ...r.phases, p13: critic },
+        status: critic.gate_result === "PASS" ? "COMPLETE" : "FAILED_QA_GATE",
+        updated_at: new Date().toISOString(),
+      }));
+
+      setActivePhase(null);
+      setProgressMsg("");
+    } catch (err) {
+      if ((err as Error).name === "AbortError") return;
+      setError(err instanceof Error ? err.message : "Analysis failed.");
+      setActivePhase(null);
+      updateRun((r) => ({ ...r, updated_at: new Date().toISOString() }));
+    }
+  }
 
   async function runFullPipeline() {
     if (!input.keyword.trim()) { setError("Enter a keyword to continue."); return; }
@@ -671,9 +789,66 @@ export default function BlogGenPage() {
         {/* Input form */}
         {!run && (
           <div className="rounded-xl border border-[var(--border)] bg-[var(--card)] p-6 space-y-4">
+            {/* Mode toggle */}
+            <div className="flex gap-1 rounded-lg border border-[var(--border)] p-1 bg-slate-50">
+              <button
+                onClick={() => setMode("generate")}
+                className={`flex-1 rounded-md py-1.5 text-xs font-medium transition ${mode === "generate" ? "bg-white shadow-sm text-[var(--foreground)]" : "text-[var(--muted)] hover:text-[var(--foreground)]"}`}
+              >
+                Generate new article
+              </button>
+              <button
+                onClick={() => setMode("analyse")}
+                className={`flex-1 rounded-md py-1.5 text-xs font-medium transition ${mode === "analyse" ? "bg-white shadow-sm text-[var(--foreground)]" : "text-[var(--muted)] hover:text-[var(--foreground)]"}`}
+              >
+                Analyse existing draft
+              </button>
+            </div>
+
+            {/* Upload zone — analyse mode only */}
+            {mode === "analyse" && (
+              <div>
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  accept=".docx,.txt,.md"
+                  className="hidden"
+                  onChange={(e) => { const f = e.target.files?.[0]; if (f) handleFileUpload(f); }}
+                />
+                <div
+                  onClick={() => fileInputRef.current?.click()}
+                  onDragOver={(e) => e.preventDefault()}
+                  onDrop={(e) => { e.preventDefault(); const f = e.dataTransfer.files[0]; if (f) handleFileUpload(f); }}
+                  className={`cursor-pointer rounded-lg border-2 border-dashed px-4 py-6 text-center transition ${uploadState === "done" ? "border-green-300 bg-green-50" : "border-[var(--border)] hover:border-[var(--accent)] hover:bg-[var(--accent-soft)]"}`}
+                >
+                  {uploadState === "idle" && (
+                    <>
+                      <p className="text-sm font-medium text-[var(--foreground)]">Drop your draft here or click to upload</p>
+                      <p className="text-xs text-[var(--muted)] mt-1">.docx · .txt · .md</p>
+                    </>
+                  )}
+                  {uploadState === "extracting" && (
+                    <p className="text-sm text-[var(--accent)]">Reading document…</p>
+                  )}
+                  {uploadState === "done" && (
+                    <>
+                      <p className="text-sm font-medium text-green-700">{uploadFile?.name}</p>
+                      <p className="text-xs text-green-600 mt-0.5">{uploadWordCount.toLocaleString()} words extracted</p>
+                    </>
+                  )}
+                  {uploadState === "error" && (
+                    <p className="text-sm text-red-600">{uploadError}</p>
+                  )}
+                </div>
+              </div>
+            )}
+
             <div>
-              <label className="block text-xs font-medium text-[var(--muted)] mb-1">Keyword / Topic *</label>
-              <input type="text" value={input.keyword} onChange={(e) => setInput((p) => ({ ...p, keyword: e.target.value }))} placeholder="e.g. best CRM software for small businesses" className="w-full rounded-lg border border-[var(--border)] bg-white px-3 py-2 text-sm text-[var(--foreground)] outline-none focus:border-[var(--accent)] focus:ring-2 focus:ring-[var(--accent-soft)]" onKeyDown={(e) => { if (e.key === "Enter") runFullPipeline(); }} />
+              <label className="block text-xs font-medium text-[var(--muted)] mb-1">
+                Keyword / Topic *
+                {mode === "analyse" && uploadState === "done" && <span className="ml-1 font-normal">(auto-detected from doc — override if needed)</span>}
+              </label>
+              <input type="text" value={input.keyword} onChange={(e) => setInput((p) => ({ ...p, keyword: e.target.value }))} placeholder="e.g. best CRM software for small businesses" className="w-full rounded-lg border border-[var(--border)] bg-white px-3 py-2 text-sm text-[var(--foreground)] outline-none focus:border-[var(--accent)] focus:ring-2 focus:ring-[var(--accent-soft)]" onKeyDown={(e) => { if (e.key === "Enter" && mode === "generate") runFullPipeline(); }} />
             </div>
             <div className="grid grid-cols-2 gap-3">
               <div>
@@ -685,16 +860,28 @@ export default function BlogGenPage() {
                 <input type="text" value={input.business_context ?? ""} onChange={(e) => setInput((p) => ({ ...p, business_context: e.target.value }))} placeholder="e.g. SaaS company selling CRM" className="w-full rounded-lg border border-[var(--border)] bg-white px-3 py-2 text-sm text-[var(--foreground)] outline-none focus:border-[var(--accent)]" />
               </div>
             </div>
+            {mode === "generate" && (
+              <div>
+                <label className="block text-xs font-medium text-[var(--muted)] mb-1">Existing URL <span className="font-normal text-[var(--muted)]">(optional)</span></label>
+                <input type="url" value={input.existing_url ?? ""} onChange={(e) => setInput((p) => ({ ...p, existing_url: e.target.value }))} placeholder="https://yoursite.com/existing-article" className="w-full rounded-lg border border-[var(--border)] bg-white px-3 py-2 text-sm text-[var(--foreground)] outline-none focus:border-[var(--accent)]" />
+              </div>
+            )}
             <div>
-              <label className="block text-xs font-medium text-[var(--muted)] mb-1">Existing URL <span className="font-normal text-[var(--muted)]">(optional)</span></label>
-              <input type="url" value={input.existing_url ?? ""} onChange={(e) => setInput((p) => ({ ...p, existing_url: e.target.value }))} placeholder="https://yoursite.com/existing-article" className="w-full rounded-lg border border-[var(--border)] bg-white px-3 py-2 text-sm text-[var(--foreground)] outline-none focus:border-[var(--accent)]" />
-            </div>
-            <div>
-              <label className="block text-xs font-medium text-[var(--muted)] mb-1">E-E-A-T Notes <span className="font-normal text-[var(--muted)]">(personal experience, credentials — woven in verbatim)</span></label>
+              <label className="block text-xs font-medium text-[var(--muted)] mb-1">E-E-A-T Notes <span className="font-normal text-[var(--muted)]">(personal experience, credentials)</span></label>
               <textarea value={input.manual_eeat_notes ?? ""} onChange={(e) => setInput((p) => ({ ...p, manual_eeat_notes: e.target.value }))} placeholder="e.g. We ran this exact test across 12 clients in 2024 and found..." rows={3} className="w-full rounded-lg border border-[var(--border)] bg-white px-3 py-2 text-sm text-[var(--foreground)] outline-none focus:border-[var(--accent)] resize-none" />
             </div>
             {error && <p className="text-sm text-red-600">{error}</p>}
-            <button onClick={runFullPipeline} className="w-full rounded-lg bg-[var(--accent)] py-2.5 text-sm font-medium text-white hover:bg-blue-700 transition">Generate Article</button>
+            {mode === "generate" ? (
+              <button onClick={runFullPipeline} className="w-full rounded-lg bg-[var(--accent)] py-2.5 text-sm font-medium text-white hover:bg-blue-700 transition">Generate Article</button>
+            ) : (
+              <button
+                onClick={runAnalysePipeline}
+                disabled={uploadState !== "done"}
+                className="w-full rounded-lg bg-violet-600 py-2.5 text-sm font-medium text-white hover:bg-violet-700 transition disabled:opacity-40"
+              >
+                {uploadState === "extracting" ? "Reading document…" : "Analyse Draft"}
+              </button>
+            )}
           </div>
         )}
 
@@ -759,6 +946,120 @@ export default function BlogGenPage() {
                   <ul className="text-xs text-amber-700 space-y-0.5 list-disc list-inside">
                     {run.phases.p13.failing_items.map((f, i) => <li key={i}>{f}</li>)}
                   </ul>
+                )}
+              </div>
+            )}
+
+            {/* Doc Gap Analysis panel — analyse mode only */}
+            {run.phases.doc_gap && (
+              <div className="rounded-xl border border-violet-200 bg-violet-50 p-5 space-y-4">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <p className="text-sm font-semibold text-violet-800">Draft Analysis Report</p>
+                    <p className="text-xs text-violet-600 mt-0.5">Overall score: {run.phases.doc_gap.overall_score}/100 — {run.phases.doc_gap.overall_verdict}</p>
+                  </div>
+                </div>
+
+                {run.phases.doc_gap.quick_wins?.length > 0 && (
+                  <div>
+                    <p className="text-xs font-semibold uppercase tracking-wide text-violet-700 mb-2">Quick Wins</p>
+                    <div className="space-y-2">
+                      {run.phases.doc_gap.quick_wins.map((w, i) => (
+                        <div key={i} className="flex gap-2 rounded-lg bg-white border border-violet-100 px-3 py-2">
+                          <span className={`mt-0.5 shrink-0 rounded-full px-1.5 py-0.5 text-[10px] font-semibold ${w.impact === "high" ? "bg-red-100 text-red-700" : "bg-amber-100 text-amber-700"}`}>{w.impact}</span>
+                          <div>
+                            <p className="text-xs font-medium text-[var(--foreground)]">{w.title}</p>
+                            <p className="text-xs text-[var(--muted)]">{w.description}</p>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {run.phases.doc_gap.missing_sections?.length > 0 && (
+                  <details className="group">
+                    <summary className="cursor-pointer text-xs font-semibold uppercase tracking-wide text-violet-700 list-none flex items-center gap-1">
+                      <span className="group-open:rotate-90 transition-transform inline-block">▶</span>
+                      Missing sections ({run.phases.doc_gap.missing_sections.length})
+                    </summary>
+                    <div className="mt-2 space-y-2">
+                      {run.phases.doc_gap.missing_sections.map((s, i) => (
+                        <div key={i} className="rounded-lg bg-white border border-violet-100 px-3 py-2">
+                          <p className="text-xs font-medium text-[var(--foreground)]">{s.h2}</p>
+                          <p className="text-xs text-[var(--muted)] mt-0.5">{s.why_needed}</p>
+                          {s.suggested_content && <p className="text-xs text-violet-700 mt-1 italic">{s.suggested_content}</p>}
+                        </div>
+                      ))}
+                    </div>
+                  </details>
+                )}
+
+                {run.phases.doc_gap.weak_sections?.length > 0 && (
+                  <details className="group">
+                    <summary className="cursor-pointer text-xs font-semibold uppercase tracking-wide text-violet-700 list-none flex items-center gap-1">
+                      <span className="group-open:rotate-90 transition-transform inline-block">▶</span>
+                      Weak sections ({run.phases.doc_gap.weak_sections.length})
+                    </summary>
+                    <div className="mt-2 space-y-2">
+                      {run.phases.doc_gap.weak_sections.map((s, i) => (
+                        <div key={i} className="rounded-lg bg-white border border-violet-100 px-3 py-2">
+                          <p className="text-xs font-medium text-[var(--foreground)]">{s.heading}</p>
+                          <p className="text-xs text-red-600 mt-0.5">{s.current_issue}</p>
+                          <p className="text-xs text-green-700 mt-1">Fix: {s.specific_fix}</p>
+                        </div>
+                      ))}
+                    </div>
+                  </details>
+                )}
+
+                {run.phases.doc_gap.unsourced_claims?.length > 0 && (
+                  <details className="group">
+                    <summary className="cursor-pointer text-xs font-semibold uppercase tracking-wide text-violet-700 list-none flex items-center gap-1">
+                      <span className="group-open:rotate-90 transition-transform inline-block">▶</span>
+                      Unsourced claims ({run.phases.doc_gap.unsourced_claims.length})
+                    </summary>
+                    <div className="mt-2 space-y-2">
+                      {run.phases.doc_gap.unsourced_claims.map((c, i) => (
+                        <div key={i} className="rounded-lg bg-white border border-violet-100 px-3 py-2">
+                          <p className="text-xs text-[var(--foreground)] italic">"{c.claim}"</p>
+                          <p className="text-xs text-[var(--muted)] mt-0.5">In: {c.location} · Suggested source: {c.suggested_source_type}</p>
+                        </div>
+                      ))}
+                    </div>
+                  </details>
+                )}
+
+                {run.phases.doc_gap.missing_entities?.length > 0 && (
+                  <details className="group">
+                    <summary className="cursor-pointer text-xs font-semibold uppercase tracking-wide text-violet-700 list-none flex items-center gap-1">
+                      <span className="group-open:rotate-90 transition-transform inline-block">▶</span>
+                      Missing entities ({run.phases.doc_gap.missing_entities.length})
+                    </summary>
+                    <div className="mt-2 flex flex-wrap gap-1.5">
+                      {run.phases.doc_gap.missing_entities.map((e, i) => (
+                        <span key={i} title={`Add to: ${e.where_to_add}`} className="rounded-full bg-white border border-violet-200 px-2 py-0.5 text-xs text-violet-700">{e.entity}</span>
+                      ))}
+                    </div>
+                  </details>
+                )}
+
+                {run.phases.doc_gap.eeat_gaps?.length > 0 && (
+                  <details className="group">
+                    <summary className="cursor-pointer text-xs font-semibold uppercase tracking-wide text-violet-700 list-none flex items-center gap-1">
+                      <span className="group-open:rotate-90 transition-transform inline-block">▶</span>
+                      E-E-A-T gaps ({run.phases.doc_gap.eeat_gaps.length})
+                    </summary>
+                    <div className="mt-2 space-y-2">
+                      {run.phases.doc_gap.eeat_gaps.map((g, i) => (
+                        <div key={i} className="rounded-lg bg-white border border-violet-100 px-3 py-2">
+                          <p className="text-xs font-medium text-[var(--foreground)]">{g.signal}</p>
+                          <p className="text-xs text-[var(--muted)] mt-0.5">{g.current}</p>
+                          <p className="text-xs text-green-700 mt-1">Fix: {g.fix}</p>
+                        </div>
+                      ))}
+                    </div>
+                  </details>
                 )}
               </div>
             )}
