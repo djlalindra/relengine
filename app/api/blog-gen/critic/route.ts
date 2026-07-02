@@ -10,7 +10,12 @@ function parseJson(text: string): unknown {
   const start = text.indexOf("{");
   const end = text.lastIndexOf("}");
   if (start === -1 || end === -1) throw new Error("No JSON object found");
-  return JSON.parse(text.slice(start, end + 1));
+  const slice = text.slice(start, end + 1);
+  try {
+    return JSON.parse(slice);
+  } catch {
+    return JSON.parse(slice.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F]/g, ""));
+  }
 }
 
 export async function POST(req: NextRequest) {
