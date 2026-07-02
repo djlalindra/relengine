@@ -2918,7 +2918,7 @@ export default function Home() {
               <span className="truncate">{tab.label}</span>
             </button>
           ))}
-          <div className="pt-1">
+          <div className="pt-1 space-y-0.5">
             <a
               href="/blog-gen"
               className="flex w-full items-center gap-2.5 rounded-lg px-3 py-2 text-xs font-medium text-[var(--muted)] hover:bg-slate-100 hover:text-[var(--foreground)] transition"
@@ -2927,6 +2927,15 @@ export default function Home() {
                 <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/>
               </svg>
               <span className="truncate">Blog Gen</span>
+            </a>
+            <a
+              href="/ai-scanner"
+              className="flex w-full items-center gap-2.5 rounded-lg px-3 py-2 text-xs font-medium text-[var(--muted)] hover:bg-slate-100 hover:text-[var(--foreground)] transition"
+            >
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/><path d="M11 8v6M8 11h6"/>
+              </svg>
+              <span className="truncate">AI Scanner</span>
             </a>
           </div>
         </nav>

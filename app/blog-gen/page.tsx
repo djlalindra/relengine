@@ -1499,11 +1499,45 @@ export default function BlogGenPage() {
                   onRerunCancel={() => setRerunState(null)}
                   rerunLoading={rerunState?.phase === "critic" && rerunState.loading}
                 >
-                  {run.phases.p13.failing_items?.length ? (
-                    <ul className="text-xs text-amber-700 list-disc list-inside space-y-0.5">{run.phases.p13.failing_items.map((f, i) => <li key={i}>{f}</li>)}</ul>
-                  ) : (
-                    <p className="text-xs text-green-700">All rubric items passed.</p>
-                  )}
+                  {(() => {
+                    const p13 = run.phases.p13;
+                    const allCriteria: [keyof typeof p13, string][] = [
+                      ["answer_first_every_section", "Answer-first every section"],
+                      ["avg_sentence_length_under_25_words", "Avg sentence length under 25 words"],
+                      ["max_paragraph_sentences_5_or_under", "Max paragraph sentences 5 or under"],
+                      ["flesch_kincaid_grade_approx_9", "Flesch-Kincaid grade approx 9"],
+                      ["all_core_entities_present_and_contextualized", "All core entities present and contextualized"],
+                      ["lists_used_where_structurally_needed", "Lists used where structurally needed"],
+                      ["headings_are_query_shaped_and_seo_relevant", "Headings are query-shaped and SEO relevant"],
+                      ["no_unsourced_stats_or_claims", "No unsourced stats or claims"],
+                      ["no_fabricated_quotes_or_studies", "No fabricated quotes or studies"],
+                      ["hypotheticals_clearly_labeled_as_hypothetical", "Hypotheticals clearly labeled"],
+                      ["eeat_shown_not_just_claimed", "E-E-A-T shown, not just claimed"],
+                      ["every_reference_maps_to_a_used_claim", "Every reference maps to a used claim"],
+                      ["passages_are_self_contained_chunkable", "Passages are self-contained / chunkable"],
+                      ["information_gain_points_from_phase5_present", "Information gain points present"],
+                      ["no_competitor_content_reproduced_verbatim", "No competitor content reproduced verbatim"],
+                      ["ai_signal_score_band_is_low", "AI signal score band is low"],
+                      ["no_ai_vocabulary_cluster_of_3_or_more", "No AI vocabulary cluster of 3+"],
+                      ["no_challenges_closer_pattern", "No 'challenges closer' pattern"],
+                      ["no_undue_significance_inflation_sentences", "No significance inflation sentences"],
+                      ["section_lengths_and_structure_vary_naturally", "Section lengths and structure vary naturally"],
+                      ["em_dash_density_under_1_per_200_words", "Em dash density under 1 per 200 words"],
+                    ];
+                    return (
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-0.5">
+                        {allCriteria.map(([key, label]) => {
+                          const passed = p13[key] as boolean;
+                          return (
+                            <div key={key} className="flex items-center gap-1.5 py-0.5">
+                              <span className={`text-xs font-bold ${passed ? "text-green-600" : "text-amber-600"}`}>{passed ? "✓" : "✗"}</span>
+                              <span className={`text-xs ${passed ? "text-[var(--muted)]" : "text-amber-700 font-medium"}`}>{label}</span>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    );
+                  })()}
                 </PhasePanel>
               )}
 
