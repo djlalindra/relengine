@@ -317,6 +317,7 @@ export default function BlogGenPage() {
   const [uploadedText, setUploadedText] = useState("");
   const [uploadWordCount, setUploadWordCount] = useState(0);
   const [uploadError, setUploadError] = useState("");
+  const [generatingImproved, setGeneratingImproved] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const updateRun = useCallback((updater: (prev: BlogGenRun) => BlogGenRun) => {
@@ -434,6 +435,107 @@ export default function BlogGenPage() {
       setError(err instanceof Error ? err.message : "Analysis failed.");
       setActivePhase(null);
       updateRun((r) => ({ ...r, updated_at: new Date().toISOString() }));
+    }
+  }
+
+  async function generateImprovedArticle() {
+    if (!run || !run.phases.doc_gap || !run.uploaded_article_text) return;
+    setError("");
+    setGeneratingImproved(true);
+
+    const abort = new AbortController();
+    abortRef.current = abort;
+    const progress = (msg: string) => setProgressMsg(msg);
+    const update = (updater: (prev: BlogGenRun) => BlogGenRun) => updateRun(updater);
+
+    try {
+      // Build source brief text if available
+      const sourceBriefText = run.phases.source_brief?.sources
+        ?.map((s) => `[${s.source_label}] ${s.stat_or_finding} — ${s.url}`)
+        .join("\n") ?? "";
+
+      setActivePhase("draft");
+      const rewritten = await streamPhase(
+        "/api/blog-gen/rewrite",
+        {
+          article_text: run.uploaded_article_text,
+          gap_report: run.phases.doc_gap,
+          research: { p0: run.phases.p0, p1: run.phases.p1, p2: run.phases.p2, p3: run.phases.p3, p4: run.phases.p4, p5: run.phases.p5 },
+          ideal_outline: run.phases.p6,
+          manual_eeat_notes: run.input.manual_eeat_notes ?? "",
+          source_brief: sourceBriefText,
+        },
+        progress, abort.signal
+      ) as Phase7Output;
+
+      update((r) => ({ ...r, phases: { ...r.phases, p7: rewritten }, updated_at: new Date().toISOString() }));
+
+      const draftMd = rewritten.draft_markdown ?? run.uploaded_article_text;
+
+      setActivePhase("factcheck");
+      const factcheck = await streamPhase(
+        "/api/blog-gen/factcheck",
+        { keyword: run.keyword, draft_markdown: draftMd, placeholders: rewritten.placeholders_needing_sources ?? [] },
+        progress, abort.signal
+      ) as { p9?: Phase9Output; p10?: Phase10Output; corrected_markdown?: string; sourced_claims?: Phase8Output["sourced_claims"]; suggested_images?: SuggestedImage[] };
+
+      update((r) => ({
+        ...r,
+        phases: {
+          ...r.phases,
+          p8: { sourced_claims: factcheck.sourced_claims ?? [], suggested_images: factcheck.suggested_images ?? [] },
+          p9: factcheck.p9,
+          p10: factcheck.p10,
+        },
+        updated_at: new Date().toISOString(),
+      }));
+
+      const draftForPolish = factcheck.corrected_markdown ?? draftMd;
+
+      setActivePhase("polish");
+      const eeat = await streamPhase(
+        "/api/blog-gen/polish",
+        { draft_markdown: draftForPolish, manual_eeat_notes: run.input.manual_eeat_notes ?? "" },
+        progress, abort.signal
+      ) as Phase12Output;
+
+      update((r) => ({ ...r, phases: { ...r.phases, p12: eeat }, updated_at: new Date().toISOString() }));
+
+      setActivePhase("humanize");
+      const humanized = await streamPhase(
+        "/api/blog-gen/humanize",
+        { draft_markdown: eeat.revised_markdown ?? draftForPolish },
+        progress, abort.signal
+      ) as Phase115Output;
+
+      update((r) => ({ ...r, phases: { ...r.phases, p115: humanized }, updated_at: new Date().toISOString() }));
+
+      const finalMarkdown = humanized.revised_draft ?? eeat.revised_markdown ?? draftForPolish;
+
+      setActivePhase("critic");
+      const critic = await streamPhase(
+        "/api/blog-gen/critic",
+        { final_markdown: finalMarkdown },
+        progress, abort.signal
+      ) as Phase13Output;
+
+      update((r) => ({
+        ...r,
+        phases: { ...r.phases, p13: critic },
+        final_markdown: finalMarkdown,
+        status: critic.gate_result === "PASS" ? "COMPLETE" : "FAILED_QA_GATE",
+        updated_at: new Date().toISOString(),
+      }));
+
+      setActivePhase(null);
+      setProgressMsg("");
+    } catch (err) {
+      if ((err as Error).name === "AbortError") return;
+      setError(err instanceof Error ? err.message : "Rewrite failed.");
+      setActivePhase(null);
+      updateRun((r) => ({ ...r, updated_at: new Date().toISOString() }));
+    } finally {
+      setGeneratingImproved(false);
     }
   }
 
@@ -948,12 +1050,23 @@ export default function BlogGenPage() {
                 {!isRunning && (
                   <>
                     {run.phases.doc_gap && (
-                      <button
-                        onClick={() => downloadText(`gap-report-${slug(run.keyword)}.txt`, buildGapReportDownload(run))}
-                        className="text-sm px-3 py-1.5 rounded-lg border border-violet-200 text-violet-700 hover:bg-violet-50"
-                      >
-                        Download Gap Report .txt
-                      </button>
+                      <>
+                        <button
+                          onClick={() => downloadText(`gap-report-${slug(run.keyword)}.txt`, buildGapReportDownload(run))}
+                          className="text-sm px-3 py-1.5 rounded-lg border border-violet-200 text-violet-700 hover:bg-violet-50"
+                        >
+                          Download Gap Report .txt
+                        </button>
+                        {!run.final_markdown && (
+                          <button
+                            onClick={generateImprovedArticle}
+                            disabled={generatingImproved}
+                            className="text-sm px-3 py-1.5 rounded-lg bg-violet-600 text-white hover:bg-violet-700 disabled:opacity-50"
+                          >
+                            {generatingImproved ? "Generating…" : "Generate Improved Article"}
+                          </button>
+                        )}
+                      </>
                     )}
                     {run.final_markdown && (
                       <>
