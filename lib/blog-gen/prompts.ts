@@ -115,7 +115,22 @@ ${outline}
 Target word count: ${targetWordCount} words (±10%).
 ${manualEeatNotes ? `Manual E-E-A-T notes to weave in naturally (do not paraphrase, do not upgrade claims beyond what the user wrote): ${manualEeatNotes}` : ""}
 
-${sourceBrief ? `VERIFIED SOURCE BRIEF — use these real statistics and findings when writing. For each stat you use, embed an inline citation immediately at the end of the sentence (no line break) using: [Source Label](url). Example: "73% of clients research law firms online before making contact. [Clio, 2024](https://clio.com/...)"\n\nSources:\n${sourceBrief}\n\nIMPORTANT: embed the citation directly attached to the sentence end — on the SAME LINE, no blank line before or after the citation link.` : "IMPORTANT: Include a minimum of 6–7 statistics, percentages, or data benchmarks distributed naturally across sections. Use [NEEDS SOURCE: exact claim] for each one so fact-checking can supply verified citations."}
+${sourceBrief ? `VERIFIED SOURCE BRIEF — use these real statistics and findings when writing.
+
+Sources:
+${sourceBrief}
+
+HOW TO USE SOURCES — write each stat as a named attribution within the sentence itself, the way a journalist or analyst would:
+  GOOD: "A 2024 Clio report found that 73% of law firm clients research online before making contact. [Clio, 2024](https://clio.com/...)"
+  GOOD: "According to the ABA's 2024 Legal Technology Survey, firms using SEO generate leads at 40% lower cost than PPC. [ABA, 2024](https://americanbar.org/...)"
+  GOOD: "LeadVerdict's 2024 study on legal SEO found that organic search converts at 3× the rate of paid ads. [LeadVerdict, 2024](https://leadverdict.com/...)"
+  BAD: "Law firms see more leads from SEO than referrals. [Clio, 2024](https://clio.com/...)"  ← source name buried in link, not in prose
+
+Rules:
+- Name the organisation and year inside the sentence ("A 2024 Clio report...", "According to LinkGraph's 2024 analysis...")
+- Place the hyperlink [Org, Year](url) immediately after the sentence — same line, no blank line
+- Use 6–7 of these sourced sentences distributed across sections where they add the most weight
+- Only use stats from the source brief above; do not invent numbers` : "IMPORTANT: Include a minimum of 6–7 statistics, percentages, or data benchmarks distributed naturally across sections. Use [NEEDS SOURCE: exact claim] for each one so fact-checking can supply verified citations."}
 
 Write the full draft following all constraints in your system prompt. Output JSON:
 {
@@ -150,12 +165,13 @@ Harvard format: Author Surname, Initial(s). (Year) 'Title of article/page', *Pub
 If author is unknown use the organisation name. If year is unknown use (n.d.).
 
 CRITICAL — inline citations in corrected_markdown:
-For every claim that has a matched source, embed a short inline citation directly at the end of the sentence, ON THE SAME LINE — no line break before or after the citation link.
-Use markdown hyperlink syntax: [Author, Year](url)
-CORRECT: "Law firms that invest in SEO see 3× more inbound leads. [Clio, 2024](https://clio.com/...)\n\nNext paragraph..."
-WRONG: "Law firms that invest in SEO see 3× more inbound leads.\n\n[Clio, 2024](https://clio.com/...)\n\nNext paragraph..."
-The citation must be on the same line as the claim — never on its own line or its own paragraph.
-Replace any [NEEDS SOURCE: ...] placeholders with either the inline citation or remove the placeholder if no source was found.
+For every [NEEDS SOURCE: claim] placeholder that has a matched source:
+1. Rewrite the sentence to name the source organisation and year within the prose itself:
+   GOOD: "A 2024 Clio report found that 73% of law firm clients research online before hiring. [Clio, 2024](https://clio.com/...)"
+   GOOD: "According to the ABA's 2024 Legal Trends data, firms with active SEO strategies see 40% lower acquisition costs. [ABA, 2024](https://americanbar.org/...)"
+   BAD: "73% of clients research law firms online. [Clio, 2024](https://clio.com/...)"  ← source name only in the link
+2. Place the hyperlink [Org, Year](url) on the SAME LINE immediately after the sentence — never on its own line or paragraph.
+3. If no source was found for a placeholder, remove the placeholder entirely and rewrite the sentence without the statistic.
 Preserve all other text, headings, and structure exactly.
 
 Output JSON:
