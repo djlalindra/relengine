@@ -39,7 +39,7 @@ export async function POST(req: NextRequest) {
         const raw = await callClaude(
           CRITIC_SYSTEM,
           buildCriticPrompt(body.final_markdown!, body.rerun_comment),
-          { model: SONNET_5, maxTokens: 4000, signal: controller.signal }
+          { model: SONNET_5, maxTokens: 8000, signal: controller.signal }
         );
 
         const result = parseJson(raw);

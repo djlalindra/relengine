@@ -44,13 +44,17 @@ export async function callClaude(
 
   const data = await response.json() as {
     content?: { type: string; text?: string }[];
+    stop_reason?: string;
     error?: { message: string };
   };
 
   if (data.error) throw new Error(`Anthropic API error: ${data.error.message}`);
 
   const text = data.content?.find((b) => b.type === "text")?.text ?? "";
-  if (!text) throw new Error("Anthropic API returned no text content.");
+  if (!text) {
+    const reason = data.stop_reason ?? "unknown";
+    throw new Error(`Anthropic API returned no text content (stop_reason: ${reason}, content blocks: ${data.content?.length ?? 0})`);
+  }
   return text;
 }
 
